@@ -28,3 +28,10 @@ Thumbs.db
 
 # VSCode
 .vscode/
+
+# SQLite / data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
