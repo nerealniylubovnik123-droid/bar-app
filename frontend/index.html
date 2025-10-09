@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Заявка на заказ</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <header>Заявка на заказ</header>
+  <div class="container">
+    <div class="search">
+      <input id="search" placeholder="Поиск..." />
+      <select id="category">
+        <option value="all">Все категории</option>
+      </select>
+    </div>
+    <div id="products" class="list"></div>
+  </div>
+  <div class="footer">
+    <div id="counter" class="small">Позиции: 0</div>
+    <button id="submit" class="btn" disabled>Отправить заявку</button>
+  </div>
+
+  <script>window.API_BASE='http://127.0.0.1:8080';</script>
+  <script src="./shared.js"></script>
+  <script src="./staff.js"></script>
+</body>
+</html>

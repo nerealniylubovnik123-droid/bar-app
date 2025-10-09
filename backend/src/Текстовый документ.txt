@@ -1,0 +1,252 @@
+// backend/src/server.cjs
+'use strict';
+
+const dns = require('dns');
+const path = require('path');
+const { pathToFileURL } = require('url');
+const fs = require('fs');
+
+const express = require('express');
+const helmet = require('helmet');
+const compression = require('compression');
+const morgan = require('morgan');
+const cors = require('cors');
+const dotenv = require('dotenv');
+
+dns.setDefaultResultOrder?.('ipv4first');
+dotenv.config({ override: true });
+
+const app = express();
+app.use(helmet());
+app.use(compression());
+app.use(express.json());
+app.use(morgan('dev'));
+app.use(cors({
+  origin: (_o, cb) => cb(null, true),
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'X-TG-INIT-DATA'],
+  maxAge: 86400
+}));
+app.options('*', cors());
+
+/** ================= DB bootstrap ================= */
+let db;
+let migrate = () => {};
+
+async function loadDb() {
+  // 1) Пытаемся взять локальный ./db (CJS)
+  try {
+    ({ db, migrate } = require('./db'));
+    return;
+  } catch (e1) {
+    // 2) Пытаемся ESM ./db.js (если он в формате module)
+    try {
+      const mod = await import(pathToFileURL(path.resolve(__dirname, './db.js')).href);
+      db = mod.db || (mod.default && mod.default.db);
+      migrate = mod.migrate || (mod.default && mod.default.migrate) || (() => {});
+      if (db) return;
+    } catch (e2) {
+      // игнорируем, пойдём на fallback
+    }
+  }
+
+  // 3) Fallback: поднимаем better-sqlite3 сами с минимальной схемой
+  const Database = require('better-sqlite3');
+  const file = process.env.SQLITE_PATH || path.resolve(__dirname, '../data.sqlite');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  db = new Database(file);
+
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE IF NOT EXISTS users (
+      tg_user_id TEXT PRIMARY KEY,
+      name TEXT,
+      role TEXT NOT NULL DEFAULT 'staff'
+    );
+
+    CREATE TABLE IF NOT EXISTS suppliers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      contact_note TEXT,
+      active INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      unit TEXT NOT NULL,
+      category TEXT,
+      supplier_id INTEGER NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity TEXT,
+      entity_id INTEGER,
+      action TEXT,
+      user_id TEXT,
+      payload_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+}
+
+/** ================= Auth (упрощённо) ================= */
+const DEV_ALLOW_UNSAFE = String(process.env.DEV_ALLOW_UNSAFE || '').toLowerCase() === 'true';
+
+function ensureUser(tgId, name, roleGuess = 'staff') {
+  const get = db.prepare('SELECT tg_user_id, name, role FROM users WHERE tg_user_id = ?');
+  let u = get.get(tgId);
+  if (!u) {
+    db.prepare('INSERT INTO users (tg_user_id, name, role) VALUES (?,?,?)')
+      .run(tgId, name || '', roleGuess);
+    u = get.get(tgId);
+  }
+  return u;
+}
+
+function verifyInitData(initData) {
+  if (DEV_ALLOW_UNSAFE) return { ok: true, user: { id: 'dev', name: 'Dev Admin' } };
+  if (!initData) return { ok: false, error: 'Missing initData' };
+  // TODO: добавить реальную проверку подписи Telegram (HMAC-SHA256)
+  return { ok: false, error: 'Telegram verification not implemented' };
+}
+
+function authMiddleware(req, res, next) {
+  const initData = req.header('X-TG-INIT-DATA') || req.query.initData;
+  const v = verifyInitData(initData);
+  if (!v.ok) return res.status(401).json({ ok: false, error: v.error });
+  // автоназначение роли admin по переменной окружения ADMIN_TG_IDS
+  const admins = String(process.env.ADMIN_TG_IDS || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const role = admins.includes(v.user.id) || v.user.id === 'dev' ? 'admin' : 'staff';
+  req.user = ensureUser(v.user.id, v.user.name, role);
+  next();
+}
+
+function adminOnly(req, res, next) {
+  if (req.user?.role !== 'admin') return res.status(403).json({ ok: false, error: 'admin only' });
+  next();
+}
+
+/** ================= Catalog: Suppliers & Products ================= */
+function registerCatalogRoutes(app) {
+  // Suppliers
+  app.get('/api/admin/suppliers', authMiddleware, adminOnly, (_req, res) => {
+    try {
+      const rows = db.prepare('SELECT * FROM suppliers ORDER BY active DESC, name').all();
+      res.json({ ok: true, suppliers: rows });
+    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+  });
+
+  app.post('/api/admin/suppliers', authMiddleware, adminOnly, (req, res) => {
+    try {
+      const { name, contact_note = '' } = req.body || {};
+      if (!name || String(name).trim().length < 2) throw new Error('Название поставщика слишком короткое');
+      const r = db.prepare('INSERT INTO suppliers (name, contact_note, active) VALUES (?,?,1)')
+        .run(String(name).trim(), String(contact_note || ''));
+      db.prepare("INSERT INTO audit_log (entity, entity_id, action, user_id, payload_json) VALUES ('supplier', ?, 'create', ?, ?)")
+        .run(r.lastInsertRowid, req.user?.tg_user_id || req.user?.id || '', JSON.stringify({ name, contact_note }));
+      const row = db.prepare('SELECT * FROM suppliers WHERE id=?').get(r.lastInsertRowid);
+      res.json({ ok: true, supplier: row });
+    } catch (e) {
+      const msg = String(e?.message || e);
+      res.status(/UNIQUE/i.test(msg) ? 409 : 400).json({ ok: false, error: /UNIQUE/i.test(msg) ? 'Поставщик с таким именем уже существует' : msg });
+    }
+  });
+
+  // soft delete supplier
+  app.delete('/api/admin/suppliers/:id', authMiddleware, adminOnly, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'bad id' });
+      const r = db.prepare('UPDATE suppliers SET active=0 WHERE id=?').run(id);
+      if (r.changes === 0) return res.status(404).json({ ok: false, error: 'not found' });
+      db.prepare("INSERT INTO audit_log (entity, entity_id, action, user_id, payload_json) VALUES ('supplier', ?, 'deactivate', ?, '{}')")
+        .run(id, req.user?.tg_user_id || req.user?.id || '');
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+  });
+
+  // Products
+  app.get('/api/admin/products', authMiddleware, adminOnly, (_req, res) => {
+    try {
+      const rows = db.prepare(`
+        SELECT p.*, s.name AS supplier_name
+        FROM products p
+        JOIN suppliers s ON s.id = p.supplier_id
+        ORDER BY p.active DESC, p.name
+      `).all();
+      res.json({ ok: true, products: rows });
+    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+  });
+
+  app.post('/api/admin/products', authMiddleware, adminOnly, (req, res) => {
+    try {
+      const { name, unit, supplier_id, category = 'Общее' } = req.body || {};
+      if (!name || String(name).trim().length < 2) throw new Error('Название товара слишком короткое');
+      if (!unit) throw new Error('Ед. изм. обязательна');
+      const sid = Number(supplier_id);
+      if (!Number.isFinite(sid)) throw new Error('Некорректный supplier_id');
+
+      const sup = db.prepare('SELECT id, active FROM suppliers WHERE id=?').get(sid);
+      if (!sup) throw new Error('Поставщик не найден');
+      if (sup.active === 0) throw new Error('Поставщик деактивирован');
+
+      const r = db.prepare('INSERT INTO products (name, unit, category, supplier_id, active) VALUES (?,?,?,?,1)')
+        .run(String(name).trim(), String(unit).trim(), String(category || 'Общее').trim(), sid);
+      db.prepare("INSERT INTO audit_log (entity, entity_id, action, user_id, payload_json) VALUES ('product', ?, 'create', ?, ?)")
+        .run(r.lastInsertRowid, req.user?.tg_user_id || req.user?.id || '', JSON.stringify({ name, unit, category, supplier_id: sid }));
+      const row = db.prepare('SELECT * FROM products WHERE id=?').get(r.lastInsertRowid);
+      res.json({ ok: true, product: row });
+    } catch (e) {
+      const msg = String(e?.message || e);
+      res.status(/UNIQUE/i.test(msg) ? 409 : 400).json({ ok: false, error: /UNIQUE/i.test(msg) ? 'Товар с таким именем уже существует' : msg });
+    }
+  });
+
+  // soft delete product
+  app.delete('/api/admin/products/:id', authMiddleware, adminOnly, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'bad id' });
+      const r = db.prepare('UPDATE products SET active=0 WHERE id=?').run(id);
+      if (r.changes === 0) return res.status(404).json({ ok: false, error: 'not found' });
+      db.prepare("INSERT INTO audit_log (entity, entity_id, action, user_id, payload_json) VALUES ('product', ?, 'deactivate', ?, '{}')")
+        .run(id, req.user?.tg_user_id || req.user?.id || '');
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+  });
+
+  // Для фронта сотрудников — активные товары
+  app.get('/api/products', authMiddleware, (_req, res) => {
+    try {
+      const rows = db.prepare('SELECT id, name, unit, category FROM products WHERE active=1 ORDER BY name').all();
+      res.json({ ok: true, products: rows });
+    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+  });
+}
+
+/** ================= Health ================= */
+app.get('/healthz', (_req, res) => res.json({ ok: true }));
+
+/** ================= Bootstrap ================= */
+(async function start() {
+  try {
+    await loadDb();
+    if (typeof migrate === 'function') {
+      try { migrate(); } catch (e) { console.warn('[migrate warning]', e?.message || e); }
+    }
+    registerCatalogRoutes(app);
+
+    const port = Number(process.env.PORT || 8080);
+    console.log('[Config] ADMIN_TG_IDS:', process.env.ADMIN_TG_IDS);
+    console.log('[Config] DEV_ALLOW_UNSAFE:', DEV_ALLOW_UNSAFE);
+    app.listen(port, () => console.log('API listening on', port));
+  } catch (err) {
+    console.error('Fatal start error:', err);
+    process.exit(1);
+  }
+})();

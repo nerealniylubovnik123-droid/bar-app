@@ -1,0 +1,30 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# Build artifacts
+dist/
+build/
+coverage/
+logs/
+*.log
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Env & local data
+*.env
+.env
+.env.*
+.Dockerfile.local
+
+# SQLite / data
+*.sqlite
+*.sqlite-journal
+*.db
+
+# VSCode
+.vscode/
