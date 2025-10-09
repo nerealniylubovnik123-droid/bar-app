@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "node src/server.cjs",
     "start": "node src/server.cjs"
   },
   "dependencies": {
@@ -14,5 +13,8 @@
     "express": "^4.19.2",
     "helmet": "^7.0.0",
     "morgan": "^1.10.0"
+  },
+  "engines": {
+    "node": "20.x"
   }
 }
