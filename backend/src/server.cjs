@@ -18,8 +18,8 @@ dns.setDefaultResultOrder?.('ipv4first');
 dotenv.config({ override: true });
 
 const app = express();
-app.use(helmet()); // без кастомной CSP, чтобы внешние скрипты разрешались тегом <script>
-app.use(compression());
+app.use(helmet());               // безопасные заголовки (без жёсткой CSP)
+app.use(compression());          // gzip/br
 app.use(express.json());
 app.use(morgan('dev'));
 app.use(cors({
@@ -30,11 +30,12 @@ app.use(cors({
 }));
 app.options('*', cors());
 
-/** ================= DB bootstrap ================= */
+/* ===================== DB bootstrap ===================== */
 let db;
 let migrate = () => {};
 
 async function loadDb() {
+  // 1) Пытаемся загрузить локальный модуль db (если он у тебя есть)
   try {
     ({ db, migrate } = require('./db'));
     return;
@@ -47,6 +48,7 @@ async function loadDb() {
     } catch (e2) {}
   }
 
+  // 2) Фоллбек — создаём SQLite на better-sqlite3
   const Database = require('better-sqlite3');
   const file = process.env.SQLITE_PATH || path.resolve(__dirname, '../data.sqlite');
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -78,7 +80,7 @@ async function loadDb() {
       FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
     );
 
-    /* status='created' совместим с CHECK('created','processed') */
+    -- status='created' — совместим со старым CHECK ('created','processed')
     CREATE TABLE IF NOT EXISTS requisitions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT,
@@ -128,7 +130,7 @@ async function loadDb() {
   `);
 }
 
-/** === Schema guard / detection === */
+/* ======== Schema guard / detection (user_id / created_by) ======== */
 let REQ_USER_COL = 'user_id'; // в старых БД может быть created_by
 
 function ensureSchema() {
@@ -149,11 +151,11 @@ function ensureSchema() {
   }
 }
 
-/** === Русские подписи статусов (для API/уведомлений) === */
+/* ===================== i18n статусы ===================== */
 const RU_REQ = { created: 'создана', processed: 'обработана' };
 const RU_ORDER = { draft: 'черновик', approved: 'утвержден', ordered: 'заказан', received: 'получен' };
 
-/** ================= Telegram notify ================= */
+/* ===================== Telegram notify ===================== */
 async function sendTelegram(text) {
   const token = process.env.BOT_TOKEN;
   const idsStr = process.env.ADMIN_TG_IDS;
@@ -177,7 +179,7 @@ async function sendTelegram(text) {
   }
 }
 
-/** Сборка красивого текста заявки для TG */
+/* ===== текст заявки для TG (с разбиением по поставщикам) ===== */
 function buildRequisitionMessage(reqId, userName) {
   const head = db.prepare(`
     SELECT r.id, r.status, r.created_at
@@ -217,7 +219,7 @@ function buildRequisitionMessage(reqId, userName) {
   return text.trim();
 }
 
-/** ================= Auth ================= */
+/* ===================== Auth (Telegram WebApp) ===================== */
 const DEV_ALLOW_UNSAFE = String(process.env.DEV_ALLOW_UNSAFE || '').toLowerCase() === 'true';
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
 
@@ -232,31 +234,26 @@ function ensureUser(tgId, name, roleGuess = 'staff') {
   return u;
 }
 
-/** Проверка подписи Telegram initData */
 function verifyTelegramInitData(initData, botToken) {
   try {
-    // initData — URLQueryString вида "query_id=...&user=...&hash=..."
     const params = new URLSearchParams(initData);
     const hash = params.get('hash');
     if (!hash) return { ok: false, error: 'No hash' };
 
-    // собираем data_check_string (все пары, кроме hash), сортировка по ключу
     const pairs = [];
     params.forEach((v, k) => { if (k !== 'hash') pairs.push(`${k}=${v}`); });
     pairs.sort();
     const dataCheckString = pairs.join('\n');
 
-    // секрет = HMAC_SHA256(bot_token) от строки "WebAppData"
     const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
     const calcHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
 
     if (calcHash !== hash) return { ok: false, error: 'Bad hash' };
 
-    // user payload
     const userStr = params.get('user');
     const user = userStr ? JSON.parse(userStr) : null;
     return { ok: true, user };
-  } catch (e) {
+  } catch {
     return { ok: false, error: 'Invalid initData' };
   }
 }
@@ -264,7 +261,7 @@ function verifyTelegramInitData(initData, botToken) {
 function verifyInitData(req) {
   if (DEV_ALLOW_UNSAFE) {
     const fake = 'dev';
-    return { ok: true, user: { id: fake, first_name: 'Dev', last_name: 'User' } };
+    return { ok: true, user: { id: fake, name: 'Dev User' } };
   }
   const initData = req.header('X-TG-INIT-DATA') || req.query.initData;
   if (!initData) return { ok: false, error: 'Missing initData' };
@@ -292,8 +289,9 @@ function adminOnly(req, res, next) {
   next();
 }
 
-/** ================= Catalog (HARD delete + всё остальное) ================= */
+/* ===================== Catalog (suppliers & products) ===================== */
 function registerCatalogRoutes(app) {
+  // List suppliers
   app.get('/api/admin/suppliers', authMiddleware, adminOnly, (_req, res) => {
     try {
       const rows = db.prepare('SELECT * FROM suppliers ORDER BY active DESC, name').all();
@@ -301,6 +299,7 @@ function registerCatalogRoutes(app) {
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 
+  // Create supplier
   app.post('/api/admin/suppliers', authMiddleware, adminOnly, (req, res) => {
     try {
       const { name, contact_note = '' } = req.body || {};
@@ -315,14 +314,16 @@ function registerCatalogRoutes(app) {
     }
   });
 
-  // HARD delete поставщика (если нет истории)
+  // HARD delete supplier (если нет истории)
   app.delete('/api/admin/suppliers/:id', authMiddleware, adminOnly, (req, res) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'bad id' });
 
       const cntOrders = db.prepare('SELECT COUNT(*) c FROM orders WHERE supplier_id = ?').get(id).c;
-      if (cntOrders > 0) return res.status(409).json({ ok: false, error: 'Нельзя удалить поставщика: есть связанные заказы' });
+      if (cntOrders > 0) {
+        return res.status(409).json({ ok: false, error: 'Нельзя удалить поставщика: есть связанные заказы' });
+      }
 
       const prodIds = db.prepare('SELECT id FROM products WHERE supplier_id = ?').all(id).map(r => r.id);
       if (prodIds.length) {
@@ -341,6 +342,7 @@ function registerCatalogRoutes(app) {
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 
+  // List products
   app.get('/api/admin/products', authMiddleware, adminOnly, (_req, res) => {
     try {
       const rows = db.prepare(`
@@ -353,6 +355,7 @@ function registerCatalogRoutes(app) {
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 
+  // Create product
   app.post('/api/admin/products', authMiddleware, adminOnly, (req, res) => {
     try {
       const { name, unit, supplier_id, category = 'Общее' } = req.body || {};
@@ -373,7 +376,7 @@ function registerCatalogRoutes(app) {
     }
   });
 
-  // HARD delete товара (если нет истории)
+  // HARD delete product (если нет истории)
   app.delete('/api/admin/products/:id', authMiddleware, adminOnly, (req, res) => {
     try {
       const id = Number(req.params.id);
@@ -395,13 +398,14 @@ function registerCatalogRoutes(app) {
   app.get('/api/products', authMiddleware, (_req, res) => {
     try {
       const rows = db.prepare('SELECT id, name, unit, category FROM products WHERE active=1 ORDER BY name').all();
-      res.json({ ok: true, products: rows });
+    res.json({ ok: true, products: rows });
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 }
 
-/** ================= Requisitions (создание + админ) ================= */
+/* ============ Requisitions (создание + админ) ============ */
 function registerRequisitionRoutes(app) {
+  // Создать заявку (staff)
   app.post('/api/requisitions', authMiddleware, async (req, res) => {
     const { items } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
@@ -409,20 +413,19 @@ function registerRequisitionRoutes(app) {
     }
 
     const trx = db.transaction(() => {
-      // 1) создаём заявку (status='created')
+      // 1) создаём заявку: статус 'created'
       const col = REQ_USER_COL; // 'user_id' или 'created_by'
       const rReq = db.prepare(`INSERT INTO requisitions (${col}, status) VALUES (?, 'created')`)
         .run(req.user.tg_user_id);
       const reqId = Number(rReq.lastInsertRowid);
 
-      // подготовим стейтменты
+      // подготовка
       const insReqItem   = db.prepare('INSERT INTO requisition_items (requisition_id, product_id, qty_requested) VALUES (?,?,?)');
       const getProd      = db.prepare('SELECT id, supplier_id FROM products WHERE id = ? AND active = 1');
       const insOrder     = db.prepare("INSERT INTO orders (requisition_id, supplier_id, status) VALUES (?, ?, 'draft')");
       const insOrderItem = db.prepare('INSERT INTO order_items (order_id, product_id, qty_requested, qty_final) VALUES (?,?,?,?)');
 
-      // карта поставщик -> order_id
-      const ordersMap = new Map();
+      const ordersMap = new Map(); // supplier_id -> order_id
 
       for (const it of items) {
         const pid = Number(it.product_id);
@@ -462,7 +465,7 @@ function registerRequisitionRoutes(app) {
     }
   });
 
-  // Админ: список заявок (c русским статусом)
+  // Админ: список заявок
   app.get('/api/admin/requisitions', authMiddleware, adminOnly, (_req, res) => {
     try {
       const rows = db.prepare(`
@@ -538,13 +541,13 @@ function registerRequisitionRoutes(app) {
   });
 }
 
-/** ================= Health & Static ================= */
+/* ===================== Health & Static ===================== */
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
-const pathFrontend = path.resolve(__dirname, '../../frontend');
+// ВАЖНО: фронт теперь в backend/public
+const pathFrontend = path.resolve(__dirname, '../public');
 app.use(express.static(pathFrontend));
 
-// Страницы
 app.get(['/admin', '/admin.html'], (_req, res) => {
   res.sendFile(path.join(pathFrontend, 'admin.html'));
 });
@@ -554,7 +557,7 @@ app.get(['/staff', '/staff.html'], (_req, res) => {
 app.get('/', (_req, res) => res.redirect('/admin'));
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
-/** ================= Start ================= */
+/* ===================== Start ===================== */
 (async function start() {
   try {
     await loadDb();
