@@ -10,17 +10,22 @@
 <body>
   <div class="container">
     <div class="card">Определяем роль пользователя…</div>
-    <div id="diag" class="muted" style="margin-top:8px"></div>
+    <div id="diag" class="muted" style="margin-top:8px; white-space:pre-wrap"></div>
   </div>
 
   <script>
   (function(){
     'use strict';
     const API_BASE = location.origin;
+    const diag = document.getElementById('diag');
+
+    function log(s){ diag.textContent += (diag.textContent ? '\n' : '') + s; }
 
     function getInitData(){
       const tg = window.Telegram && window.Telegram.WebApp;
+      // 1) Обычный путь
       if (tg && typeof tg.initData === 'string' && tg.initData) return tg.initData;
+      // 2) initDataUnsafe
       if (tg && tg.initDataUnsafe && typeof tg.initDataUnsafe === 'object'){
         try{
           const p = new URLSearchParams();
@@ -32,6 +37,7 @@
           if (p.get('hash')) return p.toString();
         }catch(e){}
       }
+      // 3) Иногда TG Desktop кладёт в hash
       if (location.hash && location.hash.includes('tgWebAppData=')){
         try{
           const h = new URLSearchParams(location.hash.slice(1));
@@ -52,31 +58,34 @@
     }
 
     async function main(){
-      const diag = document.getElementById('diag');
       try { window.Telegram?.WebApp?.ready?.(); } catch {}
-
       const init = getInitData();
-      if (!init){
-        diag.textContent = 'Нет initData — откройте через кнопку в Telegram.';
-        // как запасной вариант: если включён DEV_ALLOW_UNSAFE, сервер пустит и так
-        try {
-          const user = await whoAmI('');
-          if (user?.role === 'admin') location.href = '/admin';
-          else location.href = '/staff';
-          return;
-        } catch (e) {}
-        return;
+      log('SDK: ' + (!!(window.Telegram && window.Telegram.WebApp)));
+      log('hash: ' + (location.hash ? 'есть' : 'пусто'));
+      log('initData: ' + (init ? 'получено' : 'пусто'));
+
+      // Сначала пробуем с initData (если есть)
+      if (init){
+        try{
+          const u = await whoAmI(init);
+          return location.replace(u?.role === 'admin' ? '/admin' : '/staff');
+        }catch(e){
+          log('Ошибка с initData: ' + (e?.message || e));
+        }
       }
 
-      const user = await whoAmI(init);
-      if (user?.role === 'admin') location.replace('/admin');
-      else location.replace('/staff');
+      // Если initData нет — возможно включён DEV_ALLOW_UNSAFE на сервере.
+      // Пробуем без initData: сервер либо пустит, либо вернёт 401.
+      try{
+        const u = await whoAmI('');
+        return location.replace(u?.role === 'admin' ? '/admin' : '/staff');
+      }catch(e){
+        log('Без initData: ' + (e?.message || e));
+        log('Откройте через кнопку WebApp в вашем Telegram-боте или временно включите DEV_ALLOW_UNSAFE=true.');
+      }
     }
 
-    main().catch(e=>{
-      const diag = document.getElementById('diag');
-      diag.textContent = 'Ошибка: ' + (e?.message || e);
-    });
+    main().catch(e=>log('Фатальная ошибка: ' + (e?.message || e)));
   })();
   </script>
 </body>
