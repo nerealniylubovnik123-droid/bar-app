@@ -1,30 +1,83 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Заявка на заказ</title>
-  <link rel="stylesheet" href="./assets/styles.css" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Загрузка…</title>
+  <link rel="stylesheet" href="./admin.css"/>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
-  <header>Заявка на заказ</header>
   <div class="container">
-    <div class="search">
-      <input id="search" placeholder="Поиск..." />
-      <select id="category">
-        <option value="all">Все категории</option>
-      </select>
-    </div>
-    <div id="products" class="list"></div>
-  </div>
-  <div class="footer">
-    <div id="counter" class="small">Позиции: 0</div>
-    <button id="submit" class="btn" disabled>Отправить заявку</button>
+    <div class="card">Определяем роль пользователя…</div>
+    <div id="diag" class="muted" style="margin-top:8px"></div>
   </div>
 
-  <script>window.API_BASE='http://127.0.0.1:8080';</script>
-  <script src="./shared.js"></script>
-  <script src="./staff.js"></script>
+  <script>
+  (function(){
+    'use strict';
+    const API_BASE = location.origin;
+
+    function getInitData(){
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg && typeof tg.initData === 'string' && tg.initData) return tg.initData;
+      if (tg && tg.initDataUnsafe && typeof tg.initDataUnsafe === 'object'){
+        try{
+          const p = new URLSearchParams();
+          if (tg.initDataUnsafe.query_id) p.set('query_id', tg.initDataUnsafe.query_id);
+          if (tg.initDataUnsafe.user) p.set('user', JSON.stringify(tg.initDataUnsafe.user));
+          if (tg.initDataUnsafe.start_param) p.set('start_param', tg.initDataUnsafe.start_param);
+          if (tg.initDataUnsafe.auth_date) p.set('auth_date', String(tg.initDataUnsafe.auth_date));
+          if (tg.initDataUnsafe.hash) p.set('hash', tg.initDataUnsafe.hash);
+          if (p.get('hash')) return p.toString();
+        }catch(e){}
+      }
+      if (location.hash && location.hash.includes('tgWebAppData=')){
+        try{
+          const h = new URLSearchParams(location.hash.slice(1));
+          const raw = h.get('tgWebAppData');
+          if (raw) return decodeURIComponent(raw);
+        }catch(e){}
+      }
+      return '';
+    }
+
+    async function whoAmI(init){
+      const url = new URL(API_BASE + '/api/me');
+      if (init) url.searchParams.set('initData', encodeURIComponent(init));
+      const r = await fetch(url.toString());
+      const j = await r.json().catch(()=>({}));
+      if (!r.ok || j?.ok === false) throw new Error(j?.error || r.statusText);
+      return j.user;
+    }
+
+    async function main(){
+      const diag = document.getElementById('diag');
+      try { window.Telegram?.WebApp?.ready?.(); } catch {}
+
+      const init = getInitData();
+      if (!init){
+        diag.textContent = 'Нет initData — откройте через кнопку в Telegram.';
+        // как запасной вариант: если включён DEV_ALLOW_UNSAFE, сервер пустит и так
+        try {
+          const user = await whoAmI('');
+          if (user?.role === 'admin') location.href = '/admin';
+          else location.href = '/staff';
+          return;
+        } catch (e) {}
+        return;
+      }
+
+      const user = await whoAmI(init);
+      if (user?.role === 'admin') location.replace('/admin');
+      else location.replace('/staff');
+    }
+
+    main().catch(e=>{
+      const diag = document.getElementById('diag');
+      diag.textContent = 'Ошибка: ' + (e?.message || e);
+    });
+  })();
+  </script>
 </body>
 </html>
