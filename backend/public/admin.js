@@ -1,227 +1,162 @@
 (() => {
   'use strict';
   const API_BASE = location.origin;
-  // initData из Telegram WebApp SDK (если открыто в Telegram)
-  const TG_INIT = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) || '';
 
-  async function api(path, { method='GET', body, headers={} } = {}) {
-    const res = await fetch(API_BASE + path, {
+  // --- извлекаем initData из разных мест (SDK/unsafe/hash) ---
+  function getInitData() {
+    const w = window;
+    const tg = w.Telegram && w.Telegram.WebApp;
+    if (tg && typeof tg.initData === 'string' && tg.initData.length > 0) return tg.initData;
+
+    if (tg && tg.initDataUnsafe && typeof tg.initDataUnsafe === 'object') {
+      try {
+        const p = new URLSearchParams();
+        if (tg.initDataUnsafe.query_id) p.set('query_id', tg.initDataUnsafe.query_id);
+        if (tg.initDataUnsafe.user) p.set('user', JSON.stringify(tg.initDataUnsafe.user));
+        if (tg.initDataUnsafe.start_param) p.set('start_param', tg.initDataUnsafe.start_param);
+        if (tg.initDataUnsafe.auth_date) p.set('auth_date', String(tg.initDataUnsafe.auth_date));
+        if (tg.initDataUnsafe.hash) p.set('hash', tg.initDataUnsafe.hash);
+        const s = p.toString();
+        if (s && p.get('hash')) return s;
+      } catch (e) {}
+    }
+    if (location.hash && location.hash.includes('tgWebAppData=')) {
+      try {
+        const h = new URLSearchParams(location.hash.slice(1));
+        const raw = h.get('tgWebAppData'); // query_id=...&user=...&hash=...
+        if (raw) return decodeURIComponent(raw);
+      } catch (e) {}
+    }
+    return '';
+  }
+  const TG_INIT = getInitData();
+
+  // --- универсальный запрос к API: initData не в заголовках! ---
+  async function api(path, { method='GET', body } = {}) {
+    const url = new URL(API_BASE + path);
+    if (method === 'GET' && TG_INIT) {
+      url.searchParams.set('initData', encodeURIComponent(TG_INIT));
+    }
+    const res = await fetch(url.toString(), {
       method,
-      headers: { 'Content-Type':'application/json', 'X-TG-INIT-DATA': TG_INIT, ...headers },
-      body: body ? JSON.stringify(body) : undefined
+      headers: { 'Content-Type': 'application/json' },
+      body: method === 'POST'
+        ? JSON.stringify({ ...(body || {}), initData: TG_INIT })
+        : undefined
     });
     let json = {}; try { json = await res.json(); } catch {}
     if (!res.ok || json?.ok === false) throw new Error(json?.error || res.statusText || 'Request failed');
     return json;
   }
 
-  const el = (t, a = {}, ...c) => {
-    const e = document.createElement(t);
-    for (const [k, v] of Object.entries(a)) {
-      if (k === 'className') e.className = v;
-      else if (k === 'html') e.innerHTML = v;
-      else if (k.startsWith('on') && typeof v === 'function') e.addEventListener(k.slice(2), v);
-      else e.setAttribute(k, v);
-    }
-    for (const x of c) e.appendChild(typeof x === 'string' ? document.createTextNode(x) : x);
-    return e;
-  };
-  const badge = (t) => el('span', { className: 'badge' }, t);
-  const btn = (t, on, { disabled=false }={}) => { const b = el('button', { className: 'btn', type:'button' }, t); b.disabled=disabled; if (on) b.addEventListener('click', on); return b; };
-  const h3 = (t) => el('h3', {}, t);
-  const note = (t) => el('div', { className:'small' }, t);
+  // --- helpers ---
+  const $ = s => document.querySelector(s);
+  function el(t, a={}, ...c){ const e=document.createElement(t); for(const[k,v]of Object.entries(a)){ if(k==='className')e.className=v; else if(k==='html')e.innerHTML=v; else e.setAttribute(k,v);} for(const x of c){ e.appendChild(typeof x==='string'?document.createTextNode(x):x);} return e; }
+  const btn=(t, on)=>{ const b=el('button',{className:'btn',type:'button'},t); if(on)b.addEventListener('click',on); return b; };
 
-  // --- каркас страниц ---
-  document.body.innerHTML = '';
-  const header = el('header', { className: 'container' }, el('h2', {}, 'Админка'));
-  const nav = el('div', { className: 'container spaced' },
-    el('a', { href:'#', id:'nav-list', className:'link' }, 'Заявки'),
-    document.createTextNode(' · '),
-    el('a', { href:'#', id:'nav-catalog', className:'link' }, 'Справочники')
-  );
-  const screenList   = el('div', { id:'screen-list', className:'container' });
-  const screenDetail = el('div', { id:'screen-detail', className:'container', style:'display:none' });
-  const screenCatalog = el('div', { id:'screen-catalog', className:'container', style:'display:none' });
-  document.body.append(header, nav, screenList, screenDetail, screenCatalog);
+  const boxWarn = $('#warning');
+  const boxSup = $('#suppliers');
+  const boxProd = $('#products');
+  const boxReq = $('#requisitions');
 
-  const show = (name) => {
-    screenList.style.display   = name==='list'    ? 'block' : 'none';
-    screenDetail.style.display = name==='detail'  ? 'block' : 'none';
-    screenCatalog.style.display= name==='catalog' ? 'block' : 'none';
-  };
+  async function loadSuppliers() {
+    const data = await api('/api/admin/suppliers');
+    boxSup.innerHTML = '';
+    (data.suppliers || []).forEach(s => {
+      const row = el('div', { className:'card spaced' },
+        el('div', {}, `#${s.id} — ${s.name}`),
+        s.contact_note ? el('div', { className:'muted' }, s.contact_note) : '',
+        btn('Удалить', async () => {
+          if (!confirm(`Удалить поставщика "${s.name}"?`)) return;
+          try { await api(`/api/admin/suppliers/${s.id}`, { method:'DELETE' }); await loadSuppliers(); await loadProducts(); }
+          catch(e){ alert(e.message); }
+        })
+      );
+      boxSup.appendChild(row);
+    });
+  }
 
-  // --- русские подписи статусов ---
-  const RU_REQ = { created: 'создана', processed: 'обработана' };
-  const RU_ORD = { draft: 'черновик', approved: 'утвержден', ordered: 'заказан', received: 'получен' };
+  async function loadProducts() {
+    const data = await api('/api/admin/products');
+    boxProd.innerHTML = '';
+    (data.products || []).forEach(p => {
+      const row = el('div', { className:'card spaced' },
+        el('div', {}, `#${p.id} — ${p.name} (${p.unit}), пост.: ${p.supplier_name}`),
+        p.category ? el('div', { className:'muted' }, `Категория: ${p.category}`) : '',
+        btn('Удалить', async () => {
+          if (!confirm(`Удалить товар "${p.name}"?`)) return;
+          try { await api(`/api/admin/products/${p.id}`, { method:'DELETE' }); await loadProducts(); }
+          catch(e){ alert(e.message); }
+        })
+      );
+      boxProd.appendChild(row);
+    });
+  }
 
-  // --- заявки (список) ---
   async function loadRequisitions() {
-    screenList.innerHTML = '';
-    screenList.appendChild(h3('Заявки'));
-    try {
-      const data = await api('/api/admin/requisitions');
-      const list = el('div', { className:'list' });
-      (data.requisitions || []).forEach(r => {
-        const card = el('div', { className:'card spaced' },
-          el('div', { className:'spaced' }, el('b', {}, `Заявка #${r.id}`), badge(r.status_ru || RU_REQ[r.status] || r.status)),
-          note(`Создана: ${new Date(r.created_at).toLocaleString()} • Автор: ${r.user_name || '—'}`),
-          btn('Открыть', () => openRequisition(r.id))
-        );
-        list.appendChild(card);
-      });
-      if (!data.requisitions?.length) list.appendChild(note('Пока нет заявок.'));
-      screenList.appendChild(list);
-    } catch (e) {
-      screenList.appendChild(el('div', { className:'error' }, 'Ошибка: ' + e.message));
-    }
+    const data = await api('/api/admin/requisitions');
+    boxReq.innerHTML = '';
+    (data.requisitions || []).forEach(r => {
+      const row = el('div', { className:'card spaced' },
+        el('div', {}, `#${r.id} — ${r.status_ru || r.status} — ${r.user_name || 'сотрудник'} — ${r.created_at || ''}`),
+        btn('Открыть', async () => {
+          try {
+            const det = await api(`/api/admin/requisitions/${r.id}`);
+            const orders = det.orders || [];
+            alert(
+              orders.length
+                ? orders.map(o => `• ${o.supplier.name} (${o.status_ru || o.status})\n` + o.items.map(i => `  - ${i.product_name}: ${i.qty_final} ${i.unit || ''}`).join('\n')).join('\n\n')
+                : 'Нет заказов'
+            );
+          } catch (e) { alert(e.message); }
+        })
+      );
+      boxReq.appendChild(row);
+    });
   }
 
-  // --- заявка (детали) ---
-  async function openRequisition(id) {
-    show('detail');
-    screenDetail.innerHTML = '';
-    screenDetail.appendChild(h3(`Заявка #${id}`));
-    screenDetail.appendChild(btn('← Назад', () => { show('list'); }, {}));
-    try {
-      const data = await api(`/api/admin/requisitions/${id}`);
-      (data.orders || []).forEach(ord => {
-        const box = el('div', { className:'card' },
-          el('div', { className:'spaced' }, el('b', {}, ord.supplier?.name || 'Поставщик'), badge(ord.status_ru || RU_ORD[ord.status] || ord.status)),
-        );
-        const statuses = ['draft','approved','ordered','received'];
-        const controls = el('div', { className:'spaced' }, note('Статус:'));
-        statuses.forEach(s => {
-          controls.appendChild(btn(RU_ORD[s] || s, async () => {
-            try { await api(`/api/admin/orders/${ord.order_id}/status`, { method:'POST', body:{ status:s } }); await openRequisition(id); }
-            catch (e) { alert(e.message); }
-          }, { disabled: s===ord.status }));
-        });
-        box.appendChild(controls);
-
-        const table = el('table', {});
-        table.createTHead().innerHTML = `<tr><th>Товар</th><th>Ед.</th><th>Запрошено</th><th>Финально</th><th>Примечание</th><th></th></tr>`;
-        const tb = table.createTBody();
-        (ord.items || []).forEach(it => {
-          const tr = tb.insertRow();
-          tr.insertCell().textContent = it.product_name;
-          tr.insertCell().textContent = it.unit || '';
-          tr.insertCell().textContent = it.qty_requested;
-          const fin = el('input', { value: String(it.qty_final ?? it.qty_requested), style:'width:80px' });
-          const noteIn = el('input', { value: it.note || '', placeholder: 'Примечание' });
-          tr.insertCell().appendChild(fin);
-          tr.insertCell().appendChild(noteIn);
-          tr.insertCell().appendChild(btn('Сохранить', async () => {
-            try { await api(`/api/admin/orders/${ord.order_id}/items/${it.item_id}`, { method:'POST', body:{ qty_final:Number(fin.value), note:noteIn.value } }); alert('Сохранено'); }
-            catch (e) { alert(e.message); }
-          }));
-        });
-        box.appendChild(table);
-        screenDetail.appendChild(box);
-      });
-    } catch (e) {
-      screenDetail.appendChild(el('div', { className:'error' }, 'Ошибка: ' + e.message));
+  async function boot() {
+    // Если страница открыта не как WebApp — честно скажем об этом
+    if (!TG_INIT) {
+      boxWarn.style.display = 'block';
+      boxWarn.innerHTML = `
+        <b>Ошибка: Missing initData</b><br/>
+        Откройте эту страницу через кнопку <i>«Админ-панель»</i> (WebApp) в вашем боте
+        или временно включите DEV_ALLOW_UNSAFE=true на сервере для теста в браузере.
+      `;
+      return;
     }
+
+    // Кнопки добавления
+    $('#btnAddSup')?.addEventListener('click', async () => {
+      const name = $('#supName').value.trim();
+      const note = $('#supNote').value.trim();
+      if (name.length < 2) return alert('Название слишком короткое');
+      try {
+        await api('/api/admin/suppliers', { method:'POST', body:{ name, contact_note: note } });
+        $('#supName').value = ''; $('#supNote').value = '';
+        await loadSuppliers();
+      } catch (e) { alert(e.message); }
+    });
+
+    $('#btnAddProd')?.addEventListener('click', async () => {
+      const name = $('#prodName').value.trim();
+      const unit = $('#prodUnit').value.trim();
+      const category = $('#prodCategory').value.trim() || 'Общее';
+      const supplier_id = Number($('#prodSupplierId').value);
+      if (name.length < 2) return alert('Название слишком короткое');
+      if (!unit) return alert('Ед. изм. обязательна');
+      if (!Number.isFinite(supplier_id)) return alert('Неверный ID поставщика');
+      try {
+        await api('/api/admin/products', { method:'POST', body:{ name, unit, category, supplier_id } });
+        $('#prodName').value = ''; $('#prodUnit').value=''; $('#prodCategory').value=''; $('#prodSupplierId').value='';
+        await loadProducts();
+      } catch (e) { alert(e.message); }
+    });
+
+    await Promise.all([loadSuppliers(), loadProducts(), loadRequisitions()]);
   }
 
-  // --- Справочники (каталог) ---
-  screenCatalog.appendChild(h3('Справочники'));
-
-  // Поставщики
-  const supForm = el('form', { className:'spaced' });
-  const supName = el('input', { placeholder:'Название поставщика', required:true });
-  const supNote = el('input', { placeholder:'Контакты/примечание' });
-  const supSubmit = el('button', { className:'btn', type:'submit' }, 'Добавить');
-  supForm.append(supName, supNote, supSubmit);
-  const supList = el('div', { className:'list', style:'margin-top:.5rem' });
-
-  // Товары
-  const prodForm = el('form', { className:'spaced' });
-  const prodName = el('input', { placeholder:'Название товара', required:true });
-  const prodUnit = el('input', { placeholder:'Ед. изм. (кг/шт/л…)', required:true });
-  const prodCat  = el('input', { placeholder:'Категория', value:'Общее' });
-  const prodSupplier = el('select', { required:true });
-  const prodSubmit = el('button', { className:'btn', type:'submit' }, 'Добавить');
-  prodForm.append(prodName, prodUnit, prodCat, prodSupplier, prodSubmit);
-  const prodList = el('div', { className:'list', style:'margin-top:.5rem' });
-
-  screenCatalog.append(
-    el('div', { className:'card' }, h3('Поставщики'), supForm, supList),
-    el('div', { className:'card' }, h3('Товары'), prodForm, prodList),
-  );
-
-  async function loadCatalog() {
-    supList.innerHTML = '';
-    prodList.innerHTML = '';
-    try {
-      const [supData, prodData] = await Promise.all([
-        api('/api/admin/suppliers'),
-        api('/api/admin/products'),
-      ]);
-
-      // селект поставщиков
-      prodSupplier.innerHTML = '';
-      (supData.suppliers || []).filter(s => s.active).forEach(s => {
-        prodSupplier.appendChild(el('option', { value: s.id }, s.name));
-      });
-
-      // список поставщиков
-      (supData.suppliers || []).forEach(s => {
-        const card = el('div', { className:'card spaced' },
-          el('div', { className:'spaced' }, el('b', {}, s.name), el('span', { className:'badge' }, s.active ? 'активен':'неактивен')),
-          note(s.contact_note || '')
-        );
-        card.appendChild(btn('Удалить', async () => {
-          if (!confirm('Удалить поставщика?')) return;
-          try { await api(`/api/admin/suppliers/${s.id}`, { method:'DELETE' }); await loadCatalog(); }
-          catch (e) { alert(e.message); }
-        }));
-        supList.appendChild(card);
-      });
-
-      // список товаров
-      (prodData.products || []).forEach(p => {
-        const card = el('div', { className:'card spaced' },
-          el('div', { className:'spaced' }, el('b', {}, p.name), el('span', { className:'badge' }, p.active ? 'активен':'неактивен')),
-          note(`${p.unit}${p.category ? ` • ${p.category}`:''} • Поставщик: ${p.supplier_name}`)
-        );
-        card.appendChild(btn('Удалить', async () => {
-          if (!confirm('Удалить товар?')) return;
-          try { await api(`/api/admin/products/${p.id}`, { method:'DELETE' }); await loadCatalog(); }
-          catch (e) { alert(e.message); }
-        }));
-        prodList.appendChild(card);
-      });
-    } catch (e) {
-      screenCatalog.appendChild(el('div', { className:'error' }, 'Ошибка загрузки: ' + e.message));
-    }
-  }
-
-  supForm.addEventListener('submit', async (ev) => {
-    ev.preventDefault();
-    try {
-      await api('/api/admin/suppliers', { method:'POST', body:{ name: supName.value.trim(), contact_note: supNote.value.trim() } });
-      supForm.reset();
-      await loadCatalog();
-    } catch (e) { alert(e.message); }
-  });
-
-  prodForm.addEventListener('submit', async (ev) => {
-    ev.preventDefault();
-    try {
-      await api('/api/admin/products', { method:'POST', body:{
-        name: prodName.value.trim(),
-        unit: prodUnit.value.trim(),
-        category: (prodCat.value || 'Общее').trim(),
-        supplier_id: Number(prodSupplier.value)
-      }});
-      prodForm.reset();
-      await loadCatalog();
-    } catch (e) { alert(e.message); }
-  });
-
-  document.getElementById('nav-list').addEventListener('click', (e) => { e.preventDefault(); show('list'); loadRequisitions(); });
-  document.getElementById('nav-catalog').addEventListener('click', (e) => { e.preventDefault(); show('catalog'); loadCatalog(); });
-
-  show('catalog');
-  loadCatalog();
+  try { window.Telegram?.WebApp?.ready?.(); } catch {}
+  boot().catch(e => { alert('Ошибка загрузки: ' + e.message); });
 })();
