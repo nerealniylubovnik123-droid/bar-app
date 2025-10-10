@@ -3,48 +3,48 @@
   const API_BASE = location.origin;
 
   function getInitData() {
-    // 1) Нормальный путь
     const w = window;
     const tg = w.Telegram && w.Telegram.WebApp;
-    if (tg && typeof tg.initData === 'string' && tg.initData.length > 0) {
-      return tg.initData;
-    }
-    // 2) Иногда данные лежат в initDataUnsafe
+    if (tg && typeof tg.initData === 'string' && tg.initData.length > 0) return tg.initData;
+
     if (tg && tg.initDataUnsafe && typeof tg.initDataUnsafe === 'object') {
       try {
-        const params = new URLSearchParams();
-        // cобираем ключевые поля, как требует проверка
-        if (tg.initDataUnsafe.query_id) params.set('query_id', tg.initDataUnsafe.query_id);
-        if (tg.initDataUnsafe.user) params.set('user', JSON.stringify(tg.initDataUnsafe.user));
-        if (tg.initDataUnsafe.start_param) params.set('start_param', tg.initDataUnsafe.start_param);
-        if (tg.initDataUnsafe.auth_date) params.set('auth_date', String(tg.initDataUnsafe.auth_date));
-        if (tg.initDataUnsafe.hash) params.set('hash', tg.initDataUnsafe.hash);
-        const s = params.toString();
-        if (s && params.get('hash')) return s;
+        const p = new URLSearchParams();
+        if (tg.initDataUnsafe.query_id) p.set('query_id', tg.initDataUnsafe.query_id);
+        if (tg.initDataUnsafe.user) p.set('user', JSON.stringify(tg.initDataUnsafe.user));
+        if (tg.initDataUnsafe.start_param) p.set('start_param', tg.initDataUnsafe.start_param);
+        if (tg.initDataUnsafe.auth_date) p.set('auth_date', String(tg.initDataUnsafe.auth_date));
+        if (tg.initDataUnsafe.hash) p.set('hash', tg.initDataUnsafe.hash);
+        const s = p.toString();
+        if (s && p.get('hash')) return s;
       } catch (e) {}
     }
-    // 3) Telegram Desktop нередко кладёт данные в hash: #tgWebAppData=<urlencoded>
     if (location.hash && location.hash.includes('tgWebAppData=')) {
       try {
         const h = new URLSearchParams(location.hash.slice(1));
-        const raw = h.get('tgWebAppData'); // это уже строка вида query_id=...&user=...&hash=...
+        const raw = h.get('tgWebAppData');
         if (raw) return decodeURIComponent(raw);
       } catch (e) {}
     }
     return '';
   }
-
   const TG_INIT = getInitData();
 
-  async function api(path, { method='GET', body, headers={} } = {}) {
-    const res = await fetch(API_BASE + path, {
+  async function api(path, { method='GET', body } = {}) {
+    const url = new URL(API_BASE + path);
+
+    // НЕ кладём initData в заголовок (там ломается из-за кириллицы).
+    // Для GET — кладём в query, для POST — в body.
+    if (method === 'GET') {
+      if (TG_INIT) url.searchParams.set('initData', encodeURIComponent(TG_INIT));
+    }
+
+    const res = await fetch(url.toString(), {
       method,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-TG-INIT-DATA': TG_INIT, // передаём то, что смогли добыть
-        ...headers
-      },
-      body: body ? JSON.stringify(body) : undefined
+      headers: { 'Content-Type': 'application/json' },
+      body: method === 'POST'
+        ? JSON.stringify({ ...(body || {}), initData: TG_INIT })
+        : undefined
     });
     let json = {}; try { json = await res.json(); } catch {}
     if (!res.ok || json?.ok === false) throw new Error(json?.error || res.statusText || 'Request failed');
@@ -59,21 +59,17 @@
 
   async function load() {
     if (!TG_INIT) {
-      // Покажем диагностическую информацию, чтобы быстро понять, где застряло
       const hasSDK = !!(window.Telegram && window.Telegram.WebApp);
       formBox.innerHTML = `
         <div class="card">
           <b>Ошибка: Missing initData</b><br/>
-          Откройте эту страницу через кнопку <i>«Оформить заявку»</i> в чате с ботом.<br/><br/>
-          Диагностика:<br/>
-          SDK: ${hasSDK ? 'есть' : 'нет'}<br/>
-          hash: ${location.hash ? 'есть' : 'пусто'}<br/>
-          Версия Telegram: попробуйте мобильное приложение (iOS/Android) или обновите Desktop.
+          Откройте через кнопку в чате с ботом.<br/><br/>
+          SDK: ${hasSDK ? 'есть' : 'нет'} • hash: ${location.hash ? 'есть' : 'пусто'}
         </div>`;
       return;
     }
 
-    const data = await api('/api/products');
+    const data = await api('/api/products', { method:'GET' });
     const products = data.products || [];
     if (!products.length) {
       formBox.innerHTML = '<div class="card">Нет активных товаров. Попросите администратора добавить их в «Справочники».</div>';
@@ -106,10 +102,6 @@
     formBox.appendChild(el('div',{className:'spaced',style:'margin-top:1rem'}, submit));
   }
 
-  // На всякий случай уведомим Telegram-клиент, что мы готовы
   try { window.Telegram?.WebApp?.ready?.(); } catch {}
-
-  load().catch(e => {
-    formBox.innerHTML = '<div class="error">Ошибка: ' + e.message + '</div>';
-  });
+  load().catch(e => { formBox.innerHTML = '<div class="error">Ошибка: ' + e.message + '</div>'; });
 })();

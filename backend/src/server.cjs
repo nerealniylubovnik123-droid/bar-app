@@ -1,4 +1,3 @@
-// backend/src/server.cjs
 'use strict';
 
 const dns = require('dns');
@@ -18,8 +17,8 @@ dns.setDefaultResultOrder?.('ipv4first');
 dotenv.config({ override: true });
 
 const app = express();
-app.use(helmet());               // безопасные заголовки (без жёсткой CSP)
-app.use(compression());          // gzip/br
+app.use(helmet());
+app.use(compression());
 app.use(express.json());
 app.use(morgan('dev'));
 app.use(cors({
@@ -30,16 +29,13 @@ app.use(cors({
 }));
 app.options('*', cors());
 
-/* ===================== DB bootstrap ===================== */
+/* ================= DB bootstrap ================= */
 let db;
 let migrate = () => {};
 
 async function loadDb() {
-  // 1) Пытаемся загрузить локальный модуль db (если он у тебя есть)
-  try {
-    ({ db, migrate } = require('./db'));
-    return;
-  } catch (e1) {
+  try { ({ db, migrate } = require('./db')); return; }
+  catch (e1) {
     try {
       const mod = await import(pathToFileURL(path.resolve(__dirname, './db.js')).href);
       db = mod.db || (mod.default && mod.default.db);
@@ -48,7 +44,6 @@ async function loadDb() {
     } catch (e2) {}
   }
 
-  // 2) Фоллбек — создаём SQLite на better-sqlite3
   const Database = require('better-sqlite3');
   const file = process.env.SQLITE_PATH || path.resolve(__dirname, '../data.sqlite');
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -80,7 +75,6 @@ async function loadDb() {
       FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
     );
 
-    -- status='created' — совместим со старым CHECK ('created','processed')
     CREATE TABLE IF NOT EXISTS requisitions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT,
@@ -130,14 +124,12 @@ async function loadDb() {
   `);
 }
 
-/* ======== Schema guard / detection (user_id / created_by) ======== */
-let REQ_USER_COL = 'user_id'; // в старых БД может быть created_by
-
+/* === Schema guard === */
+let REQ_USER_COL = 'user_id';
 function ensureSchema() {
   const cols = db.prepare(`PRAGMA table_info('requisitions')`).all();
   const hasUserId = cols.some(c => c.name === 'user_id');
   const hasCreatedBy = cols.some(c => c.name === 'created_by');
-
   if (!hasUserId && !hasCreatedBy) {
     db.exec(`ALTER TABLE requisitions ADD COLUMN user_id TEXT;`);
     REQ_USER_COL = 'user_id';
@@ -151,19 +143,18 @@ function ensureSchema() {
   }
 }
 
-/* ===================== i18n статусы ===================== */
+/* === RU labels === */
 const RU_REQ = { created: 'создана', processed: 'обработана' };
 const RU_ORDER = { draft: 'черновик', approved: 'утвержден', ordered: 'заказан', received: 'получен' };
 
-/* ===================== Telegram notify ===================== */
+/* ================= Telegram notify ================= */
 async function sendTelegram(text) {
   const token = process.env.BOT_TOKEN;
   const idsStr = process.env.ADMIN_TG_IDS;
   if (!token || !idsStr) return;
 
   const ids = idsStr.split(',').map(s => s.trim()).filter(Boolean);
-  const url = (chatId) =>
-    `https://api.telegram.org/bot${token}/sendMessage?chat_id=${encodeURIComponent(chatId)}&disable_web_page_preview=1`;
+  const url = (chatId) => `https://api.telegram.org/bot${token}/sendMessage?chat_id=${encodeURIComponent(chatId)}&disable_web_page_preview=1`;
 
   for (const chatId of ids) {
     try {
@@ -178,29 +169,17 @@ async function sendTelegram(text) {
     }
   }
 }
-
-/* ===== текст заявки для TG (с разбиением по поставщикам) ===== */
 function buildRequisitionMessage(reqId, userName) {
-  const head = db.prepare(`
-    SELECT r.id, r.status, r.created_at
-    FROM requisitions r
-    WHERE r.id = ?
-  `).get(reqId);
-
+  const head = db.prepare(`SELECT r.id, r.status, r.created_at FROM requisitions r WHERE r.id = ?`).get(reqId);
   const orders = db.prepare(`
     SELECT o.id AS order_id, o.status, s.name AS supplier_name
-    FROM orders o
-    JOIN suppliers s ON s.id = o.supplier_id
-    WHERE o.requisition_id = ?
-    ORDER BY s.name
+    FROM orders o JOIN suppliers s ON s.id = o.supplier_id
+    WHERE o.requisition_id = ? ORDER BY s.name
   `).all(reqId);
-
   const itemsStmt = db.prepare(`
     SELECT p.name AS product_name, p.unit, oi.qty_requested
-    FROM order_items oi
-    JOIN products p ON p.id = oi.product_id
-    WHERE oi.order_id = ?
-    ORDER BY p.name
+    FROM order_items oi JOIN products p ON p.id = oi.product_id
+    WHERE oi.order_id = ? ORDER BY p.name
   `);
 
   let text = `🧾 <b>Заявка #${reqId}</b> от ${userName || 'сотрудника'}\n` +
@@ -210,16 +189,13 @@ function buildRequisitionMessage(reqId, userName) {
   for (const o of orders) {
     text += `🛒 <b>${o.supplier_name}</b> (${RU_ORDER[o.status] || o.status})\n`;
     const items = itemsStmt.all(o.order_id);
-    for (const it of items) {
-      text += ` • ${it.product_name} — ${it.qty_requested} ${it.unit || ''}\n`;
-    }
+    for (const it of items) text += ` • ${it.product_name} — ${it.qty_requested} ${it.unit || ''}\n`;
     text += '\n';
   }
-
   return text.trim();
 }
 
-/* ===================== Auth (Telegram WebApp) ===================== */
+/* ================= Auth ================= */
 const DEV_ALLOW_UNSAFE = String(process.env.DEV_ALLOW_UNSAFE || '').toLowerCase() === 'true';
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
 
@@ -253,9 +229,27 @@ function verifyTelegramInitData(initData, botToken) {
     const userStr = params.get('user');
     const user = userStr ? JSON.parse(userStr) : null;
     return { ok: true, user };
-  } catch {
+  } catch (e) {
     return { ok: false, error: 'Invalid initData' };
   }
+}
+
+/** Берём initData из header ИЛИ query/body (с авто-декодом). */
+function pickInitData(req) {
+  let initData =
+    req.header('X-TG-INIT-DATA') ||
+    (typeof req.body?.initData === 'string' ? req.body.initData : '') ||
+    (typeof req.query?.__tg === 'string' ? req.query.__tg : '') ||
+    (typeof req.query?.initData === 'string' ? req.query.initData : '');
+
+  if (!initData) return '';
+  // если прилетело urlencoded — аккуратно декодируем
+  try {
+    // Некоторые клиенты шлют плюсами пробелы — норм.
+    const maybe = decodeURIComponent(initData);
+    if (maybe.includes('=') && maybe.includes('hash=')) initData = maybe;
+  } catch (_) {}
+  return initData;
 }
 
 function verifyInitData(req) {
@@ -263,9 +257,11 @@ function verifyInitData(req) {
     const fake = 'dev';
     return { ok: true, user: { id: fake, name: 'Dev User' } };
   }
-  const initData = req.header('X-TG-INIT-DATA') || req.query.initData;
-  if (!initData) return { ok: false, error: 'Missing initData' };
   if (!BOT_TOKEN) return { ok: false, error: 'Missing BOT_TOKEN' };
+
+  const initData = pickInitData(req);
+  if (!initData) return { ok: false, error: 'Missing initData' };
+
   const v = verifyTelegramInitData(initData, BOT_TOKEN);
   if (!v.ok) return v;
 
@@ -283,23 +279,18 @@ function authMiddleware(req, res, next) {
   req.user = ensureUser(v.user.id, v.user.name, role);
   next();
 }
-
 function adminOnly(req, res, next) {
   if (req.user?.role !== 'admin') return res.status(403).json({ ok: false, error: 'admin only' });
   next();
 }
 
-/* ===================== Catalog (suppliers & products) ===================== */
+/* ================= Catalog routes ================= */
 function registerCatalogRoutes(app) {
-  // List suppliers
   app.get('/api/admin/suppliers', authMiddleware, adminOnly, (_req, res) => {
-    try {
-      const rows = db.prepare('SELECT * FROM suppliers ORDER BY active DESC, name').all();
-      res.json({ ok: true, suppliers: rows });
-    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+    try { res.json({ ok: true, suppliers: db.prepare('SELECT * FROM suppliers ORDER BY active DESC, name').all() }); }
+    catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 
-  // Create supplier
   app.post('/api/admin/suppliers', authMiddleware, adminOnly, (req, res) => {
     try {
       const { name, contact_note = '' } = req.body || {};
@@ -314,25 +305,20 @@ function registerCatalogRoutes(app) {
     }
   });
 
-  // HARD delete supplier (если нет истории)
   app.delete('/api/admin/suppliers/:id', authMiddleware, adminOnly, (req, res) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'bad id' });
 
       const cntOrders = db.prepare('SELECT COUNT(*) c FROM orders WHERE supplier_id = ?').get(id).c;
-      if (cntOrders > 0) {
-        return res.status(409).json({ ok: false, error: 'Нельзя удалить поставщика: есть связанные заказы' });
-      }
+      if (cntOrders > 0) return res.status(409).json({ ok: false, error: 'Нельзя удалить поставщика: есть связанные заказы' });
 
       const prodIds = db.prepare('SELECT id FROM products WHERE supplier_id = ?').all(id).map(r => r.id);
       if (prodIds.length) {
         const qMarks = prodIds.map(()=>'?').join(',');
         const refs1 = db.prepare(`SELECT COUNT(*) c FROM order_items WHERE product_id IN (${qMarks})`).get(...prodIds).c;
         const refs2 = db.prepare(`SELECT COUNT(*) c FROM requisition_items WHERE product_id IN (${qMarks})`).get(...prodIds).c;
-        if (refs1 + refs2 > 0) {
-          return res.status(409).json({ ok: false, error: 'Нельзя удалить: товары этого поставщика уже используются в истории' });
-        }
+        if (refs1 + refs2 > 0) return res.status(409).json({ ok: false, error: 'Нельзя удалить: товары этого поставщика уже используются в истории' });
         db.prepare('DELETE FROM products WHERE supplier_id = ?').run(id);
       }
 
@@ -342,20 +328,17 @@ function registerCatalogRoutes(app) {
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 
-  // List products
   app.get('/api/admin/products', authMiddleware, adminOnly, (_req, res) => {
     try {
       const rows = db.prepare(`
         SELECT p.*, s.name AS supplier_name
-        FROM products p
-        JOIN suppliers s ON s.id = p.supplier_id
+        FROM products p JOIN suppliers s ON s.id = p.supplier_id
         ORDER BY p.active DESC, p.name
       `).all();
-      res.json({ ok: true, products: rows });
+    res.json({ ok: true, products: rows });
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 
-  // Create product
   app.post('/api/admin/products', authMiddleware, adminOnly, (req, res) => {
     try {
       const { name, unit, supplier_id, category = 'Общее' } = req.body || {};
@@ -376,7 +359,13 @@ function registerCatalogRoutes(app) {
     }
   });
 
-  // HARD delete product (если нет истории)
+  app.get('/api/products', authMiddleware, (_req, res) => {
+    try {
+      const rows = db.prepare('SELECT id, name, unit, category FROM products WHERE active=1 ORDER BY name').all();
+      res.json({ ok: true, products: rows });
+    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+  });
+
   app.delete('/api/admin/products/:id', authMiddleware, adminOnly, (req, res) => {
     try {
       const id = Number(req.params.id);
@@ -384,28 +373,17 @@ function registerCatalogRoutes(app) {
 
       const refs1 = db.prepare('SELECT COUNT(*) c FROM order_items WHERE product_id = ?').get(id).c;
       const refs2 = db.prepare('SELECT COUNT(*) c FROM requisition_items WHERE product_id = ?').get(id).c;
-      if (refs1 + refs2 > 0) {
-        return res.status(409).json({ ok: false, error: 'Нельзя удалить товар: есть история (заказы/заявки)' });
-      }
+      if (refs1 + refs2 > 0) return res.status(409).json({ ok: false, error: 'Нельзя удалить товар: есть история (заказы/заявки)' });
 
       const r = db.prepare('DELETE FROM products WHERE id=?').run(id);
       if (r.changes === 0) return res.status(404).json({ ok: false, error: 'not found' });
       res.json({ ok: true });
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
-
-  // Активные товары для сотрудника
-  app.get('/api/products', authMiddleware, (_req, res) => {
-    try {
-      const rows = db.prepare('SELECT id, name, unit, category FROM products WHERE active=1 ORDER BY name').all();
-    res.json({ ok: true, products: rows });
-    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
-  });
 }
 
-/* ============ Requisitions (создание + админ) ============ */
+/* ================= Requisitions ================= */
 function registerRequisitionRoutes(app) {
-  // Создать заявку (staff)
   app.post('/api/requisitions', authMiddleware, async (req, res) => {
     const { items } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
@@ -413,19 +391,17 @@ function registerRequisitionRoutes(app) {
     }
 
     const trx = db.transaction(() => {
-      // 1) создаём заявку: статус 'created'
-      const col = REQ_USER_COL; // 'user_id' или 'created_by'
+      const col = REQ_USER_COL;
       const rReq = db.prepare(`INSERT INTO requisitions (${col}, status) VALUES (?, 'created')`)
         .run(req.user.tg_user_id);
       const reqId = Number(rReq.lastInsertRowid);
 
-      // подготовка
       const insReqItem   = db.prepare('INSERT INTO requisition_items (requisition_id, product_id, qty_requested) VALUES (?,?,?)');
       const getProd      = db.prepare('SELECT id, supplier_id FROM products WHERE id = ? AND active = 1');
       const insOrder     = db.prepare("INSERT INTO orders (requisition_id, supplier_id, status) VALUES (?, ?, 'draft')");
       const insOrderItem = db.prepare('INSERT INTO order_items (order_id, product_id, qty_requested, qty_final) VALUES (?,?,?,?)');
 
-      const ordersMap = new Map(); // supplier_id -> order_id
+      const ordersMap = new Map();
 
       for (const it of items) {
         const pid = Number(it.product_id);
@@ -443,12 +419,10 @@ function registerRequisitionRoutes(app) {
           orderId = Number(rOrd.lastInsertRowid);
           ordersMap.set(prod.supplier_id, orderId);
         }
-        insOrderItem.run(orderId, prod.id, q, q); // qty_final = qty_requested
+        insOrderItem.run(orderId, prod.id, q, q);
       }
 
-      // 2) помечаем заявку обработанной → 'processed'
       db.prepare("UPDATE requisitions SET status = 'processed' WHERE id=?").run(reqId);
-
       return reqId;
     });
 
@@ -465,7 +439,6 @@ function registerRequisitionRoutes(app) {
     }
   });
 
-  // Админ: список заявок
   app.get('/api/admin/requisitions', authMiddleware, adminOnly, (_req, res) => {
     try {
       const rows = db.prepare(`
@@ -479,24 +452,19 @@ function registerRequisitionRoutes(app) {
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 
-  // Админ: детали заявки
   app.get('/api/admin/requisitions/:id', authMiddleware, adminOnly, (req, res) => {
     try {
       const id = Number(req.params.id);
       const orders = db.prepare(`
         SELECT o.id as order_id, o.status, s.id as supplier_id, s.name as supplier_name
-        FROM orders o
-        JOIN suppliers s ON s.id = o.supplier_id
-        WHERE o.requisition_id = ?
-        ORDER BY s.name
+        FROM orders o JOIN suppliers s ON s.id = o.supplier_id
+        WHERE o.requisition_id = ? ORDER BY s.name
       `).all(id).map(o => ({ ...o, status_ru: RU_ORDER[o.status] || o.status }));
 
       const itemsStmt = db.prepare(`
         SELECT oi.id as item_id, p.name as product_name, p.unit, oi.qty_requested, oi.qty_final, oi.note
-        FROM order_items oi
-        JOIN products p ON p.id = oi.product_id
-        WHERE oi.order_id = ?
-        ORDER BY p.name
+        FROM order_items oi JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = ? ORDER BY p.name
       `);
 
       const result = orders.map(o => ({
@@ -511,7 +479,6 @@ function registerRequisitionRoutes(app) {
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 
-  // Админ: смена статуса заказа
   app.post('/api/admin/orders/:id/status', authMiddleware, adminOnly, (req, res) => {
     try {
       const id = Number(req.params.id);
@@ -523,7 +490,6 @@ function registerRequisitionRoutes(app) {
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 
-  // Админ: правка позиции
   app.post('/api/admin/orders/:orderId/items/:itemId', authMiddleware, adminOnly, (req, res) => {
     try {
       const { orderId, itemId } = req.params;
@@ -541,10 +507,7 @@ function registerRequisitionRoutes(app) {
   });
 }
 
-/* ===================== Health & Static ===================== */
-app.get('/healthz', (_req, res) => res.json({ ok: true }));
-
-// ВАЖНО: фронт теперь в backend/public
+/* ================= Static & Pages ================= */
 const pathFrontend = path.resolve(__dirname, '../public');
 app.use(express.static(pathFrontend));
 
@@ -557,7 +520,7 @@ app.get(['/staff', '/staff.html'], (_req, res) => {
 app.get('/', (_req, res) => res.redirect('/admin'));
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
-/* ===================== Start ===================== */
+/* ================= Start ================= */
 (async function start() {
   try {
     await loadDb();
