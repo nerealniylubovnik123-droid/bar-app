@@ -2,16 +2,46 @@
   'use strict';
   const API_BASE = location.origin;
 
-  // Берём initData из Telegram WebApp SDK
-  const TG_INIT =
-    (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) || '';
+  function getInitData() {
+    // 1) Нормальный путь
+    const w = window;
+    const tg = w.Telegram && w.Telegram.WebApp;
+    if (tg && typeof tg.initData === 'string' && tg.initData.length > 0) {
+      return tg.initData;
+    }
+    // 2) Иногда данные лежат в initDataUnsafe
+    if (tg && tg.initDataUnsafe && typeof tg.initDataUnsafe === 'object') {
+      try {
+        const params = new URLSearchParams();
+        // cобираем ключевые поля, как требует проверка
+        if (tg.initDataUnsafe.query_id) params.set('query_id', tg.initDataUnsafe.query_id);
+        if (tg.initDataUnsafe.user) params.set('user', JSON.stringify(tg.initDataUnsafe.user));
+        if (tg.initDataUnsafe.start_param) params.set('start_param', tg.initDataUnsafe.start_param);
+        if (tg.initDataUnsafe.auth_date) params.set('auth_date', String(tg.initDataUnsafe.auth_date));
+        if (tg.initDataUnsafe.hash) params.set('hash', tg.initDataUnsafe.hash);
+        const s = params.toString();
+        if (s && params.get('hash')) return s;
+      } catch (e) {}
+    }
+    // 3) Telegram Desktop нередко кладёт данные в hash: #tgWebAppData=<urlencoded>
+    if (location.hash && location.hash.includes('tgWebAppData=')) {
+      try {
+        const h = new URLSearchParams(location.hash.slice(1));
+        const raw = h.get('tgWebAppData'); // это уже строка вида query_id=...&user=...&hash=...
+        if (raw) return decodeURIComponent(raw);
+      } catch (e) {}
+    }
+    return '';
+  }
+
+  const TG_INIT = getInitData();
 
   async function api(path, { method='GET', body, headers={} } = {}) {
     const res = await fetch(API_BASE + path, {
       method,
       headers: {
         'Content-Type': 'application/json',
-        'X-TG-INIT-DATA': TG_INIT,     // <-- тут отправляем подпись
+        'X-TG-INIT-DATA': TG_INIT, // передаём то, что смогли добыть
         ...headers
       },
       body: body ? JSON.stringify(body) : undefined
@@ -28,12 +58,17 @@
   const btn=(t, on)=>{ const b=el('button',{className:'btn',type:'button'},t); if(on)b.addEventListener('click',on); return b; };
 
   async function load() {
-    // Если нет initData — значит открыли не из Telegram WebApp
     if (!TG_INIT) {
+      // Покажем диагностическую информацию, чтобы быстро понять, где застряло
+      const hasSDK = !!(window.Telegram && window.Telegram.WebApp);
       formBox.innerHTML = `
         <div class="card">
           <b>Ошибка: Missing initData</b><br/>
-          Откройте эту страницу через кнопку <i>«Оформить заявку»</i> внутри вашего Telegram-бота.
+          Откройте эту страницу через кнопку <i>«Оформить заявку»</i> в чате с ботом.<br/><br/>
+          Диагностика:<br/>
+          SDK: ${hasSDK ? 'есть' : 'нет'}<br/>
+          hash: ${location.hash ? 'есть' : 'пусто'}<br/>
+          Версия Telegram: попробуйте мобильное приложение (iOS/Android) или обновите Desktop.
         </div>`;
       return;
     }
@@ -70,6 +105,9 @@
     rows.forEach(r => formBox.appendChild(r));
     formBox.appendChild(el('div',{className:'spaced',style:'margin-top:1rem'}, submit));
   }
+
+  // На всякий случай уведомим Telegram-клиент, что мы готовы
+  try { window.Telegram?.WebApp?.ready?.(); } catch {}
 
   load().catch(e => {
     formBox.innerHTML = '<div class="error">Ошибка: ' + e.message + '</div>';
