@@ -1,12 +1,19 @@
 (() => {
   'use strict';
   const API_BASE = location.origin;
-  const TG_INIT = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) || '';
+
+  // Берём initData из Telegram WebApp SDK
+  const TG_INIT =
+    (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) || '';
 
   async function api(path, { method='GET', body, headers={} } = {}) {
     const res = await fetch(API_BASE + path, {
       method,
-      headers: { 'Content-Type':'application/json', 'X-TG-INIT-DATA': TG_INIT, ...headers },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-TG-INIT-DATA': TG_INIT,     // <-- тут отправляем подпись
+        ...headers
+      },
       body: body ? JSON.stringify(body) : undefined
     });
     let json = {}; try { json = await res.json(); } catch {}
@@ -21,6 +28,16 @@
   const btn=(t, on)=>{ const b=el('button',{className:'btn',type:'button'},t); if(on)b.addEventListener('click',on); return b; };
 
   async function load() {
+    // Если нет initData — значит открыли не из Telegram WebApp
+    if (!TG_INIT) {
+      formBox.innerHTML = `
+        <div class="card">
+          <b>Ошибка: Missing initData</b><br/>
+          Откройте эту страницу через кнопку <i>«Оформить заявку»</i> внутри вашего Telegram-бота.
+        </div>`;
+      return;
+    }
+
     const data = await api('/api/products');
     const products = data.products || [];
     if (!products.length) {
@@ -28,9 +45,9 @@
       return;
     }
 
-    const rows = products.slice(0, 25).map(p => {
+    const rows = products.map(p => {
       const row = el('div', { className:'spaced' },
-        el('label', {}, p.name + ' (' + p.unit + ')'),
+        el('label', {}, `${p.name} (${p.unit})`),
         el('input', { type:'number', min:'0', step:'0.01', placeholder:'Количество', 'data-pid': String(p.id), style:'width:120px' })
       );
       return el('div', { className:'card' }, row);
