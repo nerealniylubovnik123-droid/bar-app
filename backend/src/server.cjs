@@ -234,7 +234,6 @@ function verifyTelegramInitData(initData, botToken) {
   }
 }
 
-/** Берём initData из header ИЛИ query/body (с авто-декодом). */
 function pickInitData(req) {
   let initData =
     req.header('X-TG-INIT-DATA') ||
@@ -243,9 +242,7 @@ function pickInitData(req) {
     (typeof req.query?.initData === 'string' ? req.query.initData : '');
 
   if (!initData) return '';
-  // если прилетело urlencoded — аккуратно декодируем
   try {
-    // Некоторые клиенты шлют плюсами пробелы — норм.
     const maybe = decodeURIComponent(initData);
     if (maybe.includes('=') && maybe.includes('hash=')) initData = maybe;
   } catch (_) {}
@@ -439,15 +436,18 @@ function registerRequisitionRoutes(app) {
     }
   });
 
+  // ── ВАЖНО: здесь используем реальную колонку автора (REQ_USER_COL) ──
   app.get('/api/admin/requisitions', authMiddleware, adminOnly, (_req, res) => {
     try {
-      const rows = db.prepare(`
+      const col = REQ_USER_COL; // 'user_id' или 'created_by'
+      const sql = `
         SELECT r.id, r.status, r.created_at, u.name as user_name
         FROM requisitions r
-        LEFT JOIN users u ON u.tg_user_id = r.user_id OR u.tg_user_id = r.created_by
+        LEFT JOIN users u ON u.tg_user_id = r.${col}
         ORDER BY r.id DESC
         LIMIT 200
-      `).all().map(r => ({ ...r, status_ru: RU_REQ[r.status] || r.status }));
+      `;
+      const rows = db.prepare(sql).all().map(r => ({ ...r, status_ru: RU_REQ[r.status] || r.status }));
       res.json({ ok: true, requisitions: rows });
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
