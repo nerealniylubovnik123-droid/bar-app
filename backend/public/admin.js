@@ -2,7 +2,7 @@
   'use strict';
   const API_BASE = location.origin;
 
-  // --- извлекаем initData из разных мест (SDK/unsafe/hash) ---
+  // --- достаём initData из SDK / unsafe / hash ---
   function getInitData() {
     const w = window;
     const tg = w.Telegram && w.Telegram.WebApp;
@@ -18,31 +18,42 @@
         if (tg.initDataUnsafe.hash) p.set('hash', tg.initDataUnsafe.hash);
         const s = p.toString();
         if (s && p.get('hash')) return s;
-      } catch (e) {}
+      } catch(e) {}
     }
     if (location.hash && location.hash.includes('tgWebAppData=')) {
       try {
         const h = new URLSearchParams(location.hash.slice(1));
-        const raw = h.get('tgWebAppData'); // query_id=...&user=...&hash=...
+        const raw = h.get('tgWebAppData');
         if (raw) return decodeURIComponent(raw);
-      } catch (e) {}
+      } catch(e) {}
     }
     return '';
   }
   const TG_INIT = getInitData();
 
-  // --- универсальный запрос к API: initData не в заголовках! ---
+  // --- универсальный вызов API: initData в query для НЕ-POST и в body для POST ---
   async function api(path, { method='GET', body } = {}) {
     const url = new URL(API_BASE + path);
-    if (method === 'GET' && TG_INIT) {
-      url.searchParams.set('initData', encodeURIComponent(TG_INIT));
+    const m = method.toUpperCase();
+
+    if (m === 'POST') {
+      // для POST кладём в body (и данные запроса, и initData)
+      const res = await fetch(url.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...(body || {}), initData: TG_INIT })
+      });
+      let json = {}; try { json = await res.json(); } catch {}
+      if (!res.ok || json?.ok === false) throw new Error(json?.error || res.statusText || 'Request failed');
+      return json;
     }
+
+    // для любых других методов (GET, DELETE, PUT, PATCH…) добавляем initData в query
+    if (TG_INIT) url.searchParams.set('initData', encodeURIComponent(TG_INIT));
     const res = await fetch(url.toString(), {
-      method,
+      method: m,
       headers: { 'Content-Type': 'application/json' },
-      body: method === 'POST'
-        ? JSON.stringify({ ...(body || {}), initData: TG_INIT })
-        : undefined
+      body: body ? JSON.stringify(body) : undefined
     });
     let json = {}; try { json = await res.json(); } catch {}
     if (!res.ok || json?.ok === false) throw new Error(json?.error || res.statusText || 'Request failed');
@@ -51,13 +62,13 @@
 
   // --- helpers ---
   const $ = s => document.querySelector(s);
-  function el(t, a={}, ...c){ const e=document.createElement(t); for(const[k,v]of Object.entries(a)){ if(k==='className')e.className=v; else if(k==='html')e.innerHTML=v; else e.setAttribute(k,v);} for(const x of c){ e.appendChild(typeof x==='string'?document.createTextNode(x):x);} return e; }
-  const btn=(t, on)=>{ const b=el('button',{className:'btn',type:'button'},t); if(on)b.addEventListener('click',on); return b; };
+  function el(t, a={}, ...c){ const e=document.createElement(t); for (const[k,v] of Object.entries(a)){ if(k==='className') e.className=v; else if(k==='html') e.innerHTML=v; else e.setAttribute(k,v);} for (const x of c){ e.appendChild(typeof x==='string'?document.createTextNode(x):x);} return e; }
+  const btn=(t, on)=>{ const b=el('button',{className:'btn',type:'button'},t); if(on) b.addEventListener('click',on); return b; };
 
   const boxWarn = $('#warning');
-  const boxSup = $('#suppliers');
+  const boxSup  = $('#suppliers');
   const boxProd = $('#products');
-  const boxReq = $('#requisitions');
+  const boxReq  = $('#requisitions');
 
   async function loadSuppliers() {
     const data = await api('/api/admin/suppliers');
@@ -68,8 +79,11 @@
         s.contact_note ? el('div', { className:'muted' }, s.contact_note) : '',
         btn('Удалить', async () => {
           if (!confirm(`Удалить поставщика "${s.name}"?`)) return;
-          try { await api(`/api/admin/suppliers/${s.id}`, { method:'DELETE' }); await loadSuppliers(); await loadProducts(); }
-          catch(e){ alert(e.message); }
+          try {
+            await api(`/api/admin/suppliers/${s.id}`, { method:'DELETE' });
+            await loadSuppliers();
+            await loadProducts();
+          } catch(e){ alert(e.message); }
         })
       );
       boxSup.appendChild(row);
@@ -85,8 +99,10 @@
         p.category ? el('div', { className:'muted' }, `Категория: ${p.category}`) : '',
         btn('Удалить', async () => {
           if (!confirm(`Удалить товар "${p.name}"?`)) return;
-          try { await api(`/api/admin/products/${p.id}`, { method:'DELETE' }); await loadProducts(); }
-          catch(e){ alert(e.message); }
+          try {
+            await api(`/api/admin/products/${p.id}`, { method:'DELETE' });
+            await loadProducts();
+          } catch(e){ alert(e.message); }
         })
       );
       boxProd.appendChild(row);
@@ -116,18 +132,16 @@
   }
 
   async function boot() {
-    // Если страница открыта не как WebApp — честно скажем об этом
     if (!TG_INIT) {
       boxWarn.style.display = 'block';
       boxWarn.innerHTML = `
         <b>Ошибка: Missing initData</b><br/>
         Откройте эту страницу через кнопку <i>«Админ-панель»</i> (WebApp) в вашем боте
-        или временно включите DEV_ALLOW_UNSAFE=true на сервере для теста в браузере.
-      `;
+        или временно включите DEV_ALLOW_UNSAFE=true для теста в браузере.`;
       return;
     }
 
-    // Кнопки добавления
+    // кнопки добавления
     $('#btnAddSup')?.addEventListener('click', async () => {
       const name = $('#supName').value.trim();
       const note = $('#supNote').value.trim();
