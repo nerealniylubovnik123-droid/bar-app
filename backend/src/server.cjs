@@ -18,7 +18,10 @@ dns.setDefaultResultOrder?.('ipv4first');
 dotenv.config({ override: true });
 
 const app = express();
-app.use(helmet());                 // базовая защита, CSP не включаем
+app.use(helmet({
+  contentSecurityPolicy: false,          // отключаем CSP
+  crossOriginEmbedderPolicy: false       // чтобы WebView не ругался
+}));
 app.use(compression());
 app.use(express.json());
 app.use(morgan('dev'));
