@@ -1,19 +1,27 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Сотрудник — Оформление заявки</title>
+  <title>Оформление заявки</title>
   <link rel="stylesheet" href="./admin.css"/>
-  <!-- ОБЯЗАТЕЛЬНО: SDK Telegram WebApp -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
   <div class="container">
     <h2>Оформление заявки</h2>
     <div id="form"></div>
-    <div id="result" class="card" style="display:none"></div>
+
+    <div class="spaced" style="margin-top: 1rem">
+      <button id="btnReco" class="btn" type="button">Рекомендации</button>
+      <button id="btnSubmit" class="btn" type="button">Отправить заявку</button>
+    </div>
+
+    <div id="reco" class="list" style="margin-top: 1rem"></div>
+
+    <div id="result" class="card" style="display:none; margin-top:1rem"></div>
   </div>
+
   <script src="./staff.js" defer></script>
 </body>
 </html>

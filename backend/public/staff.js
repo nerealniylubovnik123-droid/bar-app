@@ -2,106 +2,251 @@
   'use strict';
   const API_BASE = location.origin;
 
+  /* ---------- initData (как в админке) ---------- */
   function getInitData() {
-    const w = window;
-    const tg = w.Telegram && w.Telegram.WebApp;
-    if (tg && typeof tg.initData === 'string' && tg.initData.length > 0) return tg.initData;
-
-    if (tg && tg.initDataUnsafe && typeof tg.initDataUnsafe === 'object') {
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (tg?.initData) return tg.initData;
+    if (tg?.initDataUnsafe) {
       try {
         const p = new URLSearchParams();
-        if (tg.initDataUnsafe.query_id) p.set('query_id', tg.initDataUnsafe.query_id);
-        if (tg.initDataUnsafe.user) p.set('user', JSON.stringify(tg.initDataUnsafe.user));
-        if (tg.initDataUnsafe.start_param) p.set('start_param', tg.initDataUnsafe.start_param);
-        if (tg.initDataUnsafe.auth_date) p.set('auth_date', String(tg.initDataUnsafe.auth_date));
-        if (tg.initDataUnsafe.hash) p.set('hash', tg.initDataUnsafe.hash);
-        const s = p.toString();
-        if (s && p.get('hash')) return s;
-      } catch (e) {}
+        const u = tg.initDataUnsafe;
+        if (u.query_id) p.set('query_id', u.query_id);
+        if (u.user) p.set('user', JSON.stringify(u.user));
+        if (u.start_param) p.set('start_param', u.start_param);
+        if (u.auth_date) p.set('auth_date', String(u.auth_date));
+        if (u.hash) p.set('hash', u.hash);
+        if (p.get('hash')) return p.toString();
+      } catch {}
     }
-    if (location.hash && location.hash.includes('tgWebAppData=')) {
+    if (location.hash.includes('tgWebAppData=')) {
       try {
         const h = new URLSearchParams(location.hash.slice(1));
         const raw = h.get('tgWebAppData');
         if (raw) return decodeURIComponent(raw);
-      } catch (e) {}
+      } catch {}
     }
     return '';
   }
   const TG_INIT = getInitData();
 
+  /* ---------- универсальный API ---------- */
   async function api(path, { method='GET', body } = {}) {
     const url = new URL(API_BASE + path);
-
-    // НЕ кладём initData в заголовок (там ломается из-за кириллицы).
-    // Для GET — кладём в query, для POST — в body.
-    if (method === 'GET') {
-      if (TG_INIT) url.searchParams.set('initData', encodeURIComponent(TG_INIT));
+    const m = method.toUpperCase();
+    if (m === 'POST') {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...(body||{}), initData: TG_INIT })
+      });
+      const j = await res.json().catch(()=>({}));
+      if (!res.ok || j?.ok === false) throw new Error(j?.error || res.statusText);
+      return j;
     }
-
-    const res = await fetch(url.toString(), {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: method === 'POST'
-        ? JSON.stringify({ ...(body || {}), initData: TG_INIT })
-        : undefined
-    });
-    let json = {}; try { json = await res.json(); } catch {}
-    if (!res.ok || json?.ok === false) throw new Error(json?.error || res.statusText || 'Request failed');
-    return json;
+    if (TG_INIT) url.searchParams.set('initData', encodeURIComponent(TG_INIT));
+    const res = await fetch(url, { method: m, headers: { 'Content-Type': 'application/json' } });
+    const j = await res.json().catch(()=>({}));
+    if (!res.ok || j?.ok === false) throw new Error(j?.error || res.statusText);
+    return j;
   }
 
-  const formBox = document.getElementById('form');
-  const resultBox = document.getElementById('result');
+  /* ---------- helpers / state ---------- */
+  const $ = s => document.querySelector(s);
+  function el(t, a={}, ...c){
+    const e = document.createElement(t);
+    for (const [k,v] of Object.entries(a)){
+      if (k === 'className') e.className = v;
+      else if (k === 'html') e.innerHTML = v;
+      else e.setAttribute(k, v);
+    }
+    for (const x of c) e.appendChild(typeof x === 'string' ? document.createTextNode(x) : x);
+    return e;
+  }
 
-  function el(t, a={}, ...c){ const e=document.createElement(t); for(const[k,v]of Object.entries(a)){ if(k==='className')e.className=v; else if(k==='html')e.innerHTML=v; else e.setAttribute(k,v);} for(const x of c){ e.appendChild(typeof x==='string'?document.createTextNode(x):x);} return e; }
-  const btn=(t, on)=>{ const b=el('button',{className:'btn',type:'button'},t); if(on)b.addEventListener('click',on); return b; };
+  const formBox = $('#form');
+  const resultBox = $('#result');
+  const recoBox = $('#reco');
 
+  let PRODUCTS = [];                         // [{id,name,unit,category,supplier_id,supplier_name}]
+  const inputByPid = new Map();              // основная форма: product_id -> <input>
+  const recoInputByPid = new Map();          // рекомендации: product_id -> <input>
+
+  function readSelectedIds() {
+    const out = [];
+    for (const [pid, input] of inputByPid.entries()) {
+      const q = Number(input.value);
+      if (q > 0) out.push(Number(pid));
+    }
+    return out;
+  }
+
+  function groupBySupplier(products) {
+    const map = new Map(); // supplier_id -> {name, items:[]}
+    for (const p of products) {
+      if (!map.has(p.supplier_id)) map.set(p.supplier_id, { name: p.supplier_name, items: [] });
+      map.get(p.supplier_id).items.push(p);
+    }
+    return map;
+  }
+
+  /* ---------- РЕКОМЕНДАЦИИ С ВВОДОМ КОЛИЧЕСТВА ---------- */
+  function renderRecommendations() {
+    recoBox.innerHTML = '';
+    recoInputByPid.clear();
+
+    const selectedIds = new Set(readSelectedIds());
+    if (selectedIds.size === 0) {
+      recoBox.appendChild(el('div', { className:'card' }, 'Сначала добавьте в заявку хотя бы один товар — рекомендации покажут позиции от тех же поставщиков.'));
+      return;
+    }
+
+    // Поставщики, чьи товары уже в заявке
+    const supplierIdsInUse = new Set(
+      PRODUCTS.filter(p => selectedIds.has(p.id)).map(p => p.supplier_id)
+    );
+
+    // Рекомендации: товары этих поставщиков, которых ещё НЕТ в заявке
+    const recommended = PRODUCTS.filter(p => supplierIdsInUse.has(p.supplier_id) && !selectedIds.has(p.id));
+    if (!recommended.length) {
+      recoBox.appendChild(el('div', { className:'card' }, 'Подходящих рекомендаций нет — все товары этих поставщиков уже выбраны.'));
+      return;
+    }
+
+    // Общая панель действий
+    const toolbar = el('div', { className:'spaced', style:'margin-bottom:8px' },
+      el('div', { className:'muted' }, 'Введите количество прямо здесь — оно сразу появится в основной форме.'),
+      (() => {
+        const btn = el('button', { className:'btn', type:'button' }, 'Добавить все (≠0)');
+        btn.addEventListener('click', () => {
+          for (const [pid, rinp] of recoInputByPid.entries()) {
+            const val = Number(rinp.value);
+            if (!val || val <= 0) continue;
+            const main = inputByPid.get(pid);
+            if (main) main.value = String(val);
+          }
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+        return btn;
+      })()
+    );
+    recoBox.appendChild(toolbar);
+
+    const grouped = groupBySupplier(recommended);
+    for (const [sid, block] of grouped.entries()) {
+      const card = el('div', { className:'card' });
+      card.appendChild(el('div', { className:'muted', html: `<b>${block.name}</b>` }));
+
+      for (const p of block.items) {
+        const mainInput = inputByPid.get(p.id);
+
+        const qtyInput = el('input', { type:'number', min:'0', step:'0.01', placeholder:'Кол-во', style:'width:120px' });
+        recoInputByPid.set(p.id, qtyInput);
+
+        // Если в основной форме уже стоит число — покажем его и здесь
+        if (mainInput && Number(mainInput.value) > 0) qtyInput.value = String(mainInput.value);
+
+        // Синхронизация: меняем в рекомендациях → меняется в основной форме
+        qtyInput.addEventListener('input', () => {
+          if (!mainInput) return;
+          const v = qtyInput.value;
+          mainInput.value = v;
+        });
+
+        // Быстрые +1 / +0
+        const plus = el('button', { className:'btn', type:'button' }, '+1');
+        plus.addEventListener('click', () => {
+          const cur = Number(qtyInput.value) || 0;
+          qtyInput.value = String(cur + 1);
+          qtyInput.dispatchEvent(new Event('input'));
+        });
+
+        const clear = el('button', { className:'btn', type:'button' }, 'Очистить');
+        clear.addEventListener('click', () => {
+          qtyInput.value = '';
+          qtyInput.dispatchEvent(new Event('input'));
+        });
+
+        const line = el('div', { className:'spaced' },
+          el('span', {}, `${p.name} (${p.unit})`),
+          el('div', {},
+            qtyInput,
+            ' ',
+            plus,
+            ' ',
+            clear
+          )
+        );
+        card.appendChild(line);
+      }
+
+      recoBox.appendChild(card);
+    }
+  }
+
+  /* ---------- РЕНДЕР ОСНОВНОЙ ФОРМЫ ---------- */
   async function load() {
     if (!TG_INIT) {
-      const hasSDK = !!(window.Telegram && window.Telegram.WebApp);
-      formBox.innerHTML = `
-        <div class="card">
-          <b>Ошибка: Missing initData</b><br/>
-          Откройте через кнопку в чате с ботом.<br/><br/>
-          SDK: ${hasSDK ? 'есть' : 'нет'} • hash: ${location.hash ? 'есть' : 'пусто'}
-        </div>`;
+      formBox.innerHTML = '<div class="card">Ошибка: Missing initData. Откройте через кнопку в боте.</div>';
       return;
     }
 
     const data = await api('/api/products', { method:'GET' });
-    const products = data.products || [];
-    if (!products.length) {
+    PRODUCTS = data.products || [];
+    if (!PRODUCTS.length) {
       formBox.innerHTML = '<div class="card">Нет активных товаров. Попросите администратора добавить их в «Справочники».</div>';
       return;
     }
 
-    const rows = products.map(p => {
-      const row = el('div', { className:'spaced' },
-        el('label', {}, `${p.name} (${p.unit})`),
-        el('input', { type:'number', min:'0', step:'0.01', placeholder:'Количество', 'data-pid': String(p.id), style:'width:120px' })
+    formBox.innerHTML = '';
+    inputByPid.clear();
+
+    PRODUCTS.forEach(p => {
+      const inp = el('input', { type:'number', min:'0', step:'0.01', placeholder:'Кол-во', style:'width:120px' });
+      inputByPid.set(p.id, inp);
+
+      // Если пользователь меняет основную форму — обновим (если открыт блок рекомендаций)
+      inp.addEventListener('input', () => {
+        const rInp = recoInputByPid.get(p.id);
+        if (rInp) rInp.value = inp.value || '';
+      });
+
+      const row = el('div', { className:'card' },
+        el('div', { className:'spaced' },
+          el('label', {}, `${p.name} (${p.unit})`),
+          el('span', { className:'muted' }, p.supplier_name ? `Поставщик: ${p.supplier_name}` : ''),
+          inp
+        )
       );
-      return el('div', { className:'card' }, row);
+      formBox.appendChild(row);
     });
 
-    const submit = btn('Отправить заявку', async () => {
-      const inputs = Array.from(formBox.querySelectorAll('input[data-pid]'));
-      const items = inputs.map(i => ({ product_id: Number(i.getAttribute('data-pid')), qty: Number(i.value) }))
-                         .filter(x => x.qty > 0);
+    // Кнопки
+    $('#btnReco').onclick = renderRecommendations;
+
+    $('#btnSubmit').onclick = async () => {
+      const items = [];
+      for (const [pid, input] of inputByPid.entries()) {
+        const q = Number(input.value);
+        if (q > 0) items.push({ product_id: Number(pid), qty: q });
+      }
       if (!items.length) { alert('Добавьте хотя бы одну позицию'); return; }
+
       try {
         const r = await api('/api/requisitions', { method:'POST', body:{ items }});
         resultBox.style.display = 'block';
         resultBox.textContent = 'Заявка создана: #' + r.requisition_id;
-        inputs.forEach(i => i.value = '');
-      } catch (e) { alert(e.message); }
-    });
 
-    formBox.innerHTML = '';
-    rows.forEach(r => formBox.appendChild(r));
-    formBox.appendChild(el('div',{className:'spaced',style:'margin-top:1rem'}, submit));
+        // очистим всё
+        inputByPid.forEach(inp => inp.value = '');
+        recoInputByPid.forEach(inp => inp.value = '');
+        recoBox.innerHTML = '';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } catch (e) {
+        alert(e.message);
+      }
+    };
   }
 
   try { window.Telegram?.WebApp?.ready?.(); } catch {}
-  load().catch(e => { formBox.innerHTML = '<div class="error">Ошибка: ' + e.message + '</div>'; });
+  load().catch(e => { formBox.innerHTML = '<div class="card">Ошибка: '+e.message+'</div>'; });
 })();

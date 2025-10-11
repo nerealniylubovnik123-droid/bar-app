@@ -79,7 +79,7 @@ async function loadDb() {
 
     CREATE TABLE IF NOT EXISTS requisitions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT,
+      user_id TEXT,                    -- в старых БД может быть created_by
       status TEXT NOT NULL DEFAULT 'created',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -145,10 +145,6 @@ function ensureSchema() {
   }
 }
 
-/* ===== RU labels ===== */
-const RU_REQ   = { created: 'создана', processed: 'обработана' };
-const RU_ORDER = { draft: 'черновик', approved: 'утвержден', ordered: 'заказан', received: 'получен' };
-
 /* ================== Telegram notify ================== */
 async function sendTelegram(text) {
   const token = process.env.BOT_TOKEN;
@@ -167,10 +163,12 @@ async function sendTelegram(text) {
     } catch (e) { console.warn('[Telegram] fail for', chatId, String(e?.message || e)); }
   }
 }
+
+/** Собираем текст уведомления БЕЗ статусов */
 function buildRequisitionMessage(reqId, userName) {
-  const head = db.prepare(`SELECT r.id, r.status, r.created_at FROM requisitions r WHERE r.id = ?`).get(reqId);
+  const head = db.prepare(`SELECT r.id, r.created_at FROM requisitions r WHERE r.id = ?`).get(reqId);
   const orders = db.prepare(`
-    SELECT o.id AS order_id, o.status, s.name AS supplier_name
+    SELECT o.id AS order_id, s.name AS supplier_name
     FROM orders o JOIN suppliers s ON s.id = o.supplier_id
     WHERE o.requisition_id = ? ORDER BY s.name
   `).all(reqId);
@@ -181,11 +179,9 @@ function buildRequisitionMessage(reqId, userName) {
   `);
 
   let text = `🧾 <b>Заявка #${reqId}</b> от ${userName || 'сотрудника'}\n` +
-             `Статус: ${RU_REQ[head?.status] || head?.status || '—'}\n` +
              `Дата: ${head?.created_at || ''}\n\n`;
-
   for (const o of orders) {
-    text += `🛒 <b>${o.supplier_name}</b> (${RU_ORDER[o.status] || o.status})\n`;
+    text += `🛒 <b>${o.supplier_name}</b>\n`;
     const items = itemsStmt.all(o.order_id);
     for (const it of items) text += ` • ${it.product_name} — ${it.qty_requested} ${it.unit || ''}\n`;
     text += '\n';
@@ -302,14 +298,13 @@ function registerCatalogRoutes(app) {
     }
   });
 
-  // === Жёсткое удаление поставщика со всем, что связано ===
+  // ЖЁСТКОЕ удаление поставщика со всей историей
   app.delete('/api/admin/suppliers/:id', authMiddleware, adminOnly, (req, res) => {
     try {
       const sid = Number(req.params.id);
       if (!Number.isFinite(sid)) return res.status(400).json({ ok: false, error: 'bad id' });
 
       const trx = db.transaction((supplierId) => {
-        // 1) заказы этого поставщика
         const orderIds = db.prepare('SELECT id FROM orders WHERE supplier_id = ?').all(supplierId).map(r => r.id);
         if (orderIds.length) {
           const qm = orderIds.map(()=>'?').join(',');
@@ -317,7 +312,6 @@ function registerCatalogRoutes(app) {
           db.prepare(`DELETE FROM orders WHERE id IN (${qm})`).run(...orderIds);
         }
 
-        // 2) товары этого поставщика
         const prodIds = db.prepare('SELECT id FROM products WHERE supplier_id = ?').all(supplierId).map(r => r.id);
         if (prodIds.length) {
           const qm = prodIds.map(()=>'?').join(',');
@@ -326,7 +320,6 @@ function registerCatalogRoutes(app) {
           db.prepare(`DELETE FROM products WHERE id IN (${qm})`).run(...prodIds);
         }
 
-        // 3) сам поставщик
         const r = db.prepare('DELETE FROM suppliers WHERE id=?').run(supplierId);
         if (r.changes === 0) throw new Error('not found');
       });
@@ -370,7 +363,7 @@ function registerCatalogRoutes(app) {
     }
   });
 
-  // === Жёсткое удаление товара со всей историей ===
+  // ЖЁСТКОЕ удаление товара со всей историей
   app.delete('/api/admin/products/:id', authMiddleware, adminOnly, (req, res) => {
     try {
       const pid = Number(req.params.id);
@@ -388,10 +381,15 @@ function registerCatalogRoutes(app) {
     } catch (e) { res.status(400).json({ ok: false, error: String(e.message || e) }); }
   });
 
-  // Public list for staff form
+  // Публичный список для формы сотрудника (добавили supplier_id и supplier_name)
   app.get('/api/products', authMiddleware, (_req, res) => {
     try {
-      const rows = db.prepare('SELECT id, name, unit, category FROM products WHERE active=1 ORDER BY name').all();
+      const rows = db.prepare(`
+        SELECT p.id, p.name, p.unit, p.category, p.supplier_id, s.name AS supplier_name
+        FROM products p JOIN suppliers s ON s.id = p.supplier_id
+        WHERE p.active = 1
+        ORDER BY p.name
+      `).all();
       res.json({ ok: true, products: rows });
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
@@ -437,6 +435,7 @@ function registerRequisitionRoutes(app) {
         insOrderItem.run(orderId, prod.id, q, q);
       }
 
+      // статус в БД оставляем, но больше нигде не показываем
       db.prepare("UPDATE requisitions SET status = 'processed' WHERE id=?").run(reqId);
       return reqId;
     });
@@ -453,28 +452,30 @@ function registerRequisitionRoutes(app) {
     }
   });
 
+  // Список заявок для админа (без отображения статусов)
   app.get('/api/admin/requisitions', authMiddleware, adminOnly, (_req, res) => {
     try {
       const col = REQ_USER_COL;
       const rows = db.prepare(`
-        SELECT r.id, r.status, r.created_at, u.name AS user_name
+        SELECT r.id, r.created_at, u.name AS user_name
         FROM requisitions r
         LEFT JOIN users u ON u.tg_user_id = r.${col}
         ORDER BY r.id DESC
         LIMIT 200
-      `).all().map(r => ({ ...r, status_ru: RU_REQ[r.status] || r.status }));
+      `).all();
       res.json({ ok: true, requisitions: rows });
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 
+  // Детали заявки (возвращаем состав без статусов)
   app.get('/api/admin/requisitions/:id', authMiddleware, adminOnly, (req, res) => {
     try {
       const id = Number(req.params.id);
       const orders = db.prepare(`
-        SELECT o.id AS order_id, o.status, s.id AS supplier_id, s.name AS supplier_name
+        SELECT o.id AS order_id, s.id AS supplier_id, s.name AS supplier_name
         FROM orders o JOIN suppliers s ON s.id = o.supplier_id
         WHERE o.requisition_id = ? ORDER BY s.name
-      `).all(id).map(o => ({ ...o, status_ru: RU_ORDER[o.status] || o.status }));
+      `).all(id);
 
       const itemsStmt = db.prepare(`
         SELECT oi.id AS item_id, p.name AS product_name, p.unit, oi.qty_requested, oi.qty_final, oi.note
@@ -485,39 +486,10 @@ function registerRequisitionRoutes(app) {
       const result = orders.map(o => ({
         order_id: o.order_id,
         supplier: { id: o.supplier_id, name: o.supplier_name },
-        status: o.status,
-        status_ru: o.status_ru,
         items: itemsStmt.all(o.order_id),
       }));
 
       res.json({ ok: true, orders: result });
-    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
-  });
-
-  app.post('/api/admin/orders/:id/status', authMiddleware, adminOnly, (req, res) => {
-    try {
-      const id = Number(req.params.id);
-      const { status } = req.body || {};
-      const allowed = new Set(['draft', 'approved', 'ordered', 'received']);
-      if (!allowed.has(status)) return res.status(400).json({ ok: false, error: 'Bad status' });
-      db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(status, id);
-      res.json({ ok: true, status_ru: RU_ORDER[status] || status });
-    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
-  });
-
-  app.post('/api/admin/orders/:orderId/items/:itemId', authMiddleware, adminOnly, (req, res) => {
-    try {
-      const { orderId, itemId } = req.params;
-      const { qty_final, note } = req.body || {};
-      if (qty_final !== undefined) {
-        const q = Number(qty_final);
-        if (!(q >= 0)) return res.status(400).json({ ok: false, error: 'Bad qty_final' });
-        db.prepare('UPDATE order_items SET qty_final = ? WHERE id = ? AND order_id = ?').run(q, itemId, orderId);
-      }
-      if (note !== undefined) {
-        db.prepare('UPDATE order_items SET note = ? WHERE id = ? AND order_id = ?').run(String(note), itemId, orderId);
-      }
-      res.json({ ok: true });
     } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
 }
