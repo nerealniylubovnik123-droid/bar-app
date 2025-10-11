@@ -2,7 +2,7 @@
   'use strict';
   const API_BASE = location.origin;
 
-  /* ---------- initData (как в админке) ---------- */
+  /* ---------- initData ---------- */
   function getInitData() {
     const tg = window.Telegram && window.Telegram.WebApp;
     if (tg?.initData) return tg.initData;
@@ -29,7 +29,7 @@
   }
   const TG_INIT = getInitData();
 
-  /* ---------- универсальный API ---------- */
+  /* ---------- API ---------- */
   async function api(path, { method='GET', body } = {}) {
     const url = new URL(API_BASE + path);
     const m = method.toUpperCase();
@@ -69,7 +69,7 @@
 
   let PRODUCTS = [];                         // [{id,name,unit,category,supplier_id,supplier_name}]
   const inputByPid = new Map();              // основная форма: product_id -> <input>
-  const recoInputByPid = new Map();          // рекомендации: product_id -> <input>
+  const recoInputByPid = new Map();          // рекомендации: product_id -> <input> (есть в «рекомендациях»)
 
   function readSelectedIds() {
     const out = [];
@@ -80,16 +80,17 @@
     return out;
   }
 
-  function groupBySupplier(products) {
-    const map = new Map(); // supplier_id -> {name, items:[]}
-    for (const p of products) {
-      if (!map.has(p.supplier_id)) map.set(p.supplier_id, { name: p.supplier_name, items: [] });
-      map.get(p.supplier_id).items.push(p);
+  function groupBy(arr, keyFn) {
+    const map = new Map();
+    for (const item of arr) {
+      const k = keyFn(item);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(item);
     }
     return map;
   }
 
-  /* ---------- РЕКОМЕНДАЦИИ С ВВОДОМ КОЛИЧЕСТВА ---------- */
+  /* ---------- РЕКОМЕНДАЦИИ (как раньше, синхронизация сохранена) ---------- */
   function renderRecommendations() {
     recoBox.innerHTML = '';
     recoInputByPid.clear();
@@ -100,19 +101,19 @@
       return;
     }
 
-    // Поставщики, чьи товары уже в заявке
     const supplierIdsInUse = new Set(
       PRODUCTS.filter(p => selectedIds.has(p.id)).map(p => p.supplier_id)
     );
 
-    // Рекомендации: товары этих поставщиков, которых ещё НЕТ в заявке
-    const recommended = PRODUCTS.filter(p => supplierIdsInUse.has(p.supplier_id) && !selectedIds.has(p.id));
+    const recommended = PRODUCTS
+      .filter(p => supplierIdsInUse.has(p.supplier_id) && !selectedIds.has(p.id))
+      .sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+
     if (!recommended.length) {
       recoBox.appendChild(el('div', { className:'card' }, 'Подходящих рекомендаций нет — все товары этих поставщиков уже выбраны.'));
       return;
     }
 
-    // Общая панель действий
     const toolbar = el('div', { className:'spaced', style:'margin-bottom:8px' },
       el('div', { className:'muted' }, 'Введите количество прямо здесь — оно сразу появится в основной форме.'),
       (() => {
@@ -131,35 +132,33 @@
     );
     recoBox.appendChild(toolbar);
 
-    const grouped = groupBySupplier(recommended);
-    for (const [sid, block] of grouped.entries()) {
-      const card = el('div', { className:'card' });
-      card.appendChild(el('div', { className:'muted', html: `<b>${block.name}</b>` }));
+    // группируем рекомендации по поставщикам (логика рекомендаций привязана к поставщику)
+    const bySupplier = groupBy(recommended, p => `${p.supplier_id}__${p.supplier_name}`);
+    const supplierKeys = [...bySupplier.keys()].sort((a,b)=>{
+      const an = a.split('__')[1]||''; const bn = b.split('__')[1]||'';
+      return an.localeCompare(bn,'ru');
+    });
 
-      for (const p of block.items) {
+    for (const key of supplierKeys) {
+      const [sid, sname] = key.split('__');
+      const card = el('div', { className:'card' });
+      card.appendChild(el('div', { className:'muted', html: `<b>${sname || 'Поставщик'}</b>` }));
+
+      for (const p of bySupplier.get(key)) {
         const mainInput = inputByPid.get(p.id);
 
         const qtyInput = el('input', { type:'number', min:'0', step:'0.01', placeholder:'Кол-во', style:'width:120px' });
         recoInputByPid.set(p.id, qtyInput);
-
-        // Если в основной форме уже стоит число — покажем его и здесь
         if (mainInput && Number(mainInput.value) > 0) qtyInput.value = String(mainInput.value);
 
-        // Синхронизация: меняем в рекомендациях → меняется в основной форме
-        qtyInput.addEventListener('input', () => {
-          if (!mainInput) return;
-          const v = qtyInput.value;
-          mainInput.value = v;
-        });
+        qtyInput.addEventListener('input', () => { if (mainInput) mainInput.value = qtyInput.value; });
 
-        // Быстрые +1 / +0
         const plus = el('button', { className:'btn', type:'button' }, '+1');
         plus.addEventListener('click', () => {
           const cur = Number(qtyInput.value) || 0;
           qtyInput.value = String(cur + 1);
           qtyInput.dispatchEvent(new Event('input'));
         });
-
         const clear = el('button', { className:'btn', type:'button' }, 'Очистить');
         clear.addEventListener('click', () => {
           qtyInput.value = '';
@@ -168,22 +167,15 @@
 
         const line = el('div', { className:'spaced' },
           el('span', {}, `${p.name} (${p.unit})`),
-          el('div', {},
-            qtyInput,
-            ' ',
-            plus,
-            ' ',
-            clear
-          )
+          el('div', {}, qtyInput, ' ', plus, ' ', clear)
         );
         card.appendChild(line);
       }
-
       recoBox.appendChild(card);
     }
   }
 
-  /* ---------- РЕНДЕР ОСНОВНОЙ ФОРМЫ ---------- */
+  /* ---------- РЕНДЕР ОСНОВНОЙ ФОРМЫ: ГРУППИРОВКА ПО КАТЕГОРИЯМ ---------- */
   async function load() {
     if (!TG_INIT) {
       formBox.innerHTML = '<div class="card">Ошибка: Missing initData. Откройте через кнопку в боте.</div>';
@@ -191,7 +183,13 @@
     }
 
     const data = await api('/api/products', { method:'GET' });
-    PRODUCTS = data.products || [];
+    PRODUCTS = (data.products || []).slice().sort((a,b)=>{
+      const ac = (a.category||'').toLowerCase();
+      const bc = (b.category||'').toLowerCase();
+      if (ac === bc) return a.name.localeCompare(b.name,'ru');
+      return ac.localeCompare(bc,'ru');
+    });
+
     if (!PRODUCTS.length) {
       formBox.innerHTML = '<div class="card">Нет активных товаров. Попросите администратора добавить их в «Справочники».</div>';
       return;
@@ -200,25 +198,34 @@
     formBox.innerHTML = '';
     inputByPid.clear();
 
-    PRODUCTS.forEach(p => {
-      const inp = el('input', { type:'number', min:'0', step:'0.01', placeholder:'Кол-во', style:'width:120px' });
-      inputByPid.set(p.id, inp);
+    // Формируем группы по category (пустую считаем «Прочее»)
+    const byCategory = groupBy(PRODUCTS, p => (p.category && p.category.trim()) ? p.category.trim() : 'Прочее');
+    const categories = [...byCategory.keys()].sort((a,b)=>a.localeCompare(b,'ru'));
 
-      // Если пользователь меняет основную форму — обновим (если открыт блок рекомендаций)
-      inp.addEventListener('input', () => {
-        const rInp = recoInputByPid.get(p.id);
-        if (rInp) rInp.value = inp.value || '';
-      });
+    for (const cat of categories) {
+      const card = el('div', { className:'card' });
+      card.appendChild(el('div', { className:'muted', html: `<b>${cat}</b>` }));
 
-      const row = el('div', { className:'card' },
-        el('div', { className:'spaced' },
+      const items = byCategory.get(cat).slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+      for (const p of items) {
+        const inp = el('input', { type:'number', min:'0', step:'0.01', placeholder:'Кол-во', style:'width:120px' });
+        inputByPid.set(p.id, inp);
+
+        // синхронизация с рекомендациями
+        inp.addEventListener('input', () => {
+          const rInp = recoInputByPid.get(p.id);
+          if (rInp) rInp.value = inp.value || '';
+        });
+
+        const row = el('div', { className:'spaced' },
           el('label', {}, `${p.name} (${p.unit})`),
           el('span', { className:'muted' }, p.supplier_name ? `Поставщик: ${p.supplier_name}` : ''),
           inp
-        )
-      );
-      formBox.appendChild(row);
-    });
+        );
+        card.appendChild(row);
+      }
+      formBox.appendChild(card);
+    }
 
     // Кнопки
     $('#btnReco').onclick = renderRecommendations;
