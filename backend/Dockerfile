@@ -1,21 +1,25 @@
-# backend/Dockerfile
+# --- Dockerfile ---
 FROM node:20-alpine
-
-# Нужны инструменты сборки для better-sqlite3
-RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-# Ставим зависимости (без dev)
-COPY package*.json ./
-# На Alpine иногда нет готовых бинарей — принудительно собираем из исходников
-ENV npm_config_build_from_source=true
-RUN npm ci --omit=dev
+# Билд-зависимости для sqlite3 на Alpine
+RUN apk add --no-cache python3 make g++ git
+
+# Устанавливаем только по package.json (lock-файл не требуется)
+COPY package.json ./
+# Если у тебя есть backend/public и прочие статические файлы — они скопируются позже
+RUN npm install --omit=dev --no-audit --no-fund
 
 # Копируем остальной код
 COPY . .
 
-ENV NODE_ENV=production
-EXPOSE 8080
+# Переменные для путей в Railway Volume (переживают деплой)
+ENV SQLITE_PATH=/mnt/data/app.sqlite
+ENV CATALOG_PATH=/mnt/data/catalog.json
+ENV PORT=3000
 
-CMD ["node", "src/server.cjs"]
+EXPOSE 3000
+
+# Запуск
+CMD ["npm", "start"]
