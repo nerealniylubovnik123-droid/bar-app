@@ -1,20 +1,31 @@
 {
-  "name": "app-backend",
+  "name": "bar-app-backend",
   "version": "1.0.0",
-  "private": true,
+  "description": "Бар-приложение на Node.js/Express с SQLite и Telegram WebApp",
+  "main": "server.cjs",
+  "type": "commonjs",
   "scripts": {
-    "start": "node src/server.cjs"
+    "start": "node server.cjs",
+    "dev": "nodemon server.cjs"
   },
   "dependencies": {
-    "better-sqlite3": "^9.4.3",
-    "compression": "^1.7.4",
+    "express": "^4.19.2",
+    "body-parser": "^1.20.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "helmet": "^7.0.0",
-    "morgan": "^1.10.0"
+    "sqlite3": "^5.1.7",
+    "node-telegram-bot-api": "^0.66.0"
   },
   "engines": {
-    "node": "20.x"
-  }
+    "node": ">=18"
+  },
+  "keywords": [
+    "express",
+    "sqlite",
+    "telegram",
+    "webapp",
+    "railway"
+  ],
+  "author": "Bar App",
+  "license": "MIT"
 }
