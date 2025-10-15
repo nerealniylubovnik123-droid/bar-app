@@ -14,6 +14,7 @@ const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.SQLITE_PATH || path.join(process.cwd(), "app.sqlite");
 const CATALOG_PATH = process.env.CATALOG_PATH || "/mnt/data/catalog.json";
 const DEV_ALLOW_UNSAFE = String(process.env.DEV_ALLOW_UNSAFE || "").toLowerCase() === "true";
+const ADMIN_SHARED_TOKEN = process.env.ADMIN_TOKEN || ""; // опционально
 
 /* -------------------- STATIC: robust discovery -------------------- */
 const candidatePublicDirs = [
@@ -33,7 +34,7 @@ if (PUB_DIR) {
   app.use(express.static(PUB_DIR));
   console.log("[static] Serving from:", PUB_DIR);
 } else {
-  console.warn("[static] Public directory not found. Routes will show a helper page.");
+  console.warn("[static] Public directory not found. Pages will show helper.");
 }
 
 /* -------------------- DB helpers -------------------- */
@@ -165,7 +166,7 @@ async function rebuildCatalogJSON() {
 app.use(cors());
 app.use(bodyParser.json());
 
-/* -------------------- Helper page if file missing -------------------- */
+/* -------------------- helper page (если html не найден) -------------------- */
 function listHtmlFiles(rootDir, maxDepth = 3) {
   const results = [];
   function walk(dir, depth) {
@@ -176,9 +177,7 @@ function listHtmlFiles(rootDir, maxDepth = 3) {
       if (e.name === "node_modules" || e.name.startsWith(".")) continue;
       const full = path.join(dir, e.name);
       if (e.isDirectory()) walk(full, depth + 1);
-      else if (e.isFile() && e.name.endsWith(".html")) {
-        results.push(full);
-      }
+      else if (e.isFile() && e.name.endsWith(".html")) results.push(full);
     }
   }
   walk(rootDir, 0);
@@ -192,49 +191,37 @@ function trySendHtml(res, filenames) {
     }
   }
   const found = listHtmlFiles(process.cwd());
-  const list = found
-    .map((f) => path.relative(process.cwd(), f))
-    .sort()
-    .map((r) => `<li><code>/${r.replace(/\\/g, "/")}</code></li>`)
-    .join("");
-  return res
-    .status(200)
-    .send(
-      `<html><body style="font-family:system-ui;padding:20px">
-        <h3>Файл не найден</h3>
-        <p>Ожидались файлы: ${filenames.map(f=>`<code>${f}</code>`).join(", ")}</p>
-        <p>Текущая папка статики: <code>${PUB_DIR || "(не найдена)"}</code></p>
-        <p>Найдены HTML в проекте:</p>
-        <ul>${list || "<li><i>ничего не найдено</i></li>"}</ul>
-        <p><a href="/catalog.json">catalog.json</a></p>
-      </body></html>`
-    );
+  const list = found.map((f) => path.relative(process.cwd(), f)).sort()
+    .map((r) => `<li><code>/${r.replace(/\\/g, "/")}</code></li>`).join("");
+  return res.status(200).send(
+    `<html><body style="font-family:system-ui;padding:20px">
+      <h3>Файл не найден</h3>
+      <p>Ожидались: ${filenames.map(f=>`<code>${f}</code>`).join(", ")}</p>
+      <p>Статика: <code>${PUB_DIR || "(не найдена)"}</code></p>
+      <ul>${list || "<li><i>ничего не найдено</i></li>"}</ul>
+      <p><a href="/catalog.json">catalog.json</a></p>
+    </body></html>`
+  );
 }
 
-/* -------------------- Routes: pages -------------------- */
+/* -------------------- Pages -------------------- */
 app.get("/", (req, res) => res.redirect("/admin"));
 app.get("/admin", (req, res) => {
   if (PUB_DIR) {
-    const file = fs.existsSync(path.join(PUB_DIR, "admin.html"))
-      ? path.join(PUB_DIR, "admin.html")
-      : (fs.existsSync(path.join(PUB_DIR, "index.html"))
-          ? path.join(PUB_DIR, "index.html")
-          : null);
-    if (file) return res.sendFile(file);
+    const f = ["admin.html", "index.html"].map(n => path.join(PUB_DIR, n)).find(p => fs.existsSync(p));
+    if (f) return res.sendFile(f);
   }
   return trySendHtml(res, ["admin.html", "index.html"]);
 });
 app.get("/staff", (req, res) => {
   if (PUB_DIR) {
-    const file = fs.existsSync(path.join(PUB_DIR, "staff.html"))
-      ? path.join(PUB_DIR, "staff.html")
-      : null;
-    if (file) return res.sendFile(file);
+    const p = path.join(PUB_DIR, "staff.html");
+    if (fs.existsSync(p)) return res.sendFile(p);
   }
   return trySendHtml(res, ["staff.html"]);
 });
 
-/* -------------------- Routes: catalog -------------------- */
+/* -------------------- Catalog -------------------- */
 app.get("/catalog.json", async (req, res) => {
   try {
     if (!fs.existsSync(CATALOG_PATH)) await rebuildCatalogJSON();
@@ -246,7 +233,7 @@ app.get("/catalog.json", async (req, res) => {
   }
 });
 
-/* -------------------- NEW: /api/products (compat) -------------------- */
+/* -------------------- Auth helpers for /api -------------------- */
 function hasInitData(req) {
   return Boolean(
     req.headers["x-telegram-init-data"] ||
@@ -254,15 +241,29 @@ function hasInitData(req) {
     (req.query && req.query.initData)
   );
 }
+function hasAdminAuth(req) {
+  const hAuth = req.headers["authorization"] || "";
+  const hAdm  = req.headers["x-admin-token"] || "";
+  // 1) Любой ненулевой токен от фронта админки (она его шлёт из localStorage)
+  if (hAuth || hAdm) return true;
+  // 2) Общий токен из переменных окружения (опционально)
+  const bearer = hAuth.startsWith("Bearer ") ? hAuth.slice(7) : hAuth;
+  if (ADMIN_SHARED_TOKEN && (bearer === ADMIN_SHARED_TOKEN || hAdm === ADMIN_SHARED_TOKEN)) return true;
+  return false;
+}
+function isAllowedWithoutInit(req) {
+  return DEV_ALLOW_UNSAFE || hasAdminAuth(req);
+}
 
-// POST /api/products  — как в Телеграм WebApp: initData в body/headers
+/* -------------------- /api/products (совместимость) -------------------- */
+// POST — для Телеграма, но разрешаем админке без initData, если есть токен/DEV
 app.post("/api/products", async (req, res) => {
   try {
-    if (!hasInitData(req) && !DEV_ALLOW_UNSAFE) {
+    if (!hasInitData(req) && !isAllowedWithoutInit(req)) {
       return res.status(401).json({
         ok: false,
         error: "INITDATA_REQUIRED",
-        hint: "Откройте через кнопку WebApp в боте или установите DEV_ALLOW_UNSAFE=true"
+        hint: "Откройте через кнопку WebApp в боте или установите DEV_ALLOW_UNSAFE=true",
       });
     }
     if (!fs.existsSync(CATALOG_PATH)) await rebuildCatalogJSON();
@@ -274,14 +275,14 @@ app.post("/api/products", async (req, res) => {
   }
 });
 
-// GET /api/products — допускаем без initData только в DEV_ALLOW_UNSAFE=true
+// GET — аналогично
 app.get("/api/products", async (req, res) => {
   try {
-    if (!hasInitData(req) && !DEV_ALLOW_UNSAFE) {
+    if (!hasInitData(req) && !isAllowedWithoutInit(req)) {
       return res.status(401).json({
         ok: false,
         error: "INITDATA_REQUIRED",
-        hint: "Откройте через кнопку WebApp в боте или установите DEV_ALLOW_UNSAFE=true"
+        hint: "Откройте через кнопку WebApp в боте или установите DEV_ALLOW_UNSAFE=true",
       });
     }
     if (!fs.existsSync(CATALOG_PATH)) await rebuildCatalogJSON();
@@ -311,7 +312,7 @@ app.get("/health", (req, res) =>
     catalog_exists: fs.existsSync(CATALOG_PATH),
     db_path: DB_PATH,
     static_dir: PUB_DIR || null,
-    dev_allow_unsafe: DEV_ALLOW_UNSAFE
+    dev_allow_unsafe: DEV_ALLOW_UNSAFE,
   })
 );
 
