@@ -1,8 +1,8 @@
+// ===== robust server.cjs (CommonJS) =====
 const express = require("express");
 const sqlite3 = require("sqlite3");
 const path = require("path");
 const fs = require("fs");
-const TelegramBot = require("node-telegram-bot-api");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const dotenv = require("dotenv");
@@ -14,28 +14,48 @@ const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.SQLITE_PATH || path.join(process.cwd(), "app.sqlite");
 const CATALOG_PATH = process.env.CATALOG_PATH || "/mnt/data/catalog.json";
 
-// 📍 Ключевая правка:
-// __dirname — реальная папка, где лежит server.cjs (src/)
-// значит public лежит на уровень выше
-const PUB_DIR = path.join(__dirname, "../backend/public");
+/* -------------------- STATIC: robust discovery -------------------- */
+const candidatePublicDirs = [
+  // относительно места, где лежит этот файл
+  path.join(__dirname, "../backend/public"),
+  path.join(__dirname, "../public"),
+  path.join(__dirname, "../../backend/public"),
+  path.join(__dirname, "../../public"),
+  // относительно cwd (Railway/Node запуска)
+  path.join(process.cwd(), "backend/public"),
+  path.join(process.cwd(), "public"),
+];
 
-const bot = new TelegramBot(process.env.BOT_TOKEN || "", { polling: false });
+// вернём первую существующую папку
+function resolvePublicDir() {
+  for (const p of candidatePublicDirs) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
 
-app.use(cors());
-app.use(bodyParser.json());
-app.use(express.static(PUB_DIR));
+const PUB_DIR = resolvePublicDir();
 
+// статика: подключаем, только если нашли
+if (PUB_DIR) {
+  app.use(express.static(PUB_DIR));
+  console.log("[static] Serving from:", PUB_DIR);
+} else {
+  console.warn("[static] Public directory not found. Routes will show a helper page.");
+}
+
+/* -------------------- DB helpers -------------------- */
 const db = new sqlite3.Database(DB_PATH, (err) => {
   if (err) console.error("SQLite open error:", err);
   else console.log("SQLite opened at:", DB_PATH);
 });
 
-/* ========= вспомогательные функции ========= */
 function dbAll(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
   });
 }
+
 function writeJsonAtomic(filePath, dataObj) {
   return new Promise((resolve, reject) => {
     const dir = path.dirname(filePath);
@@ -51,9 +71,11 @@ function writeJsonAtomic(filePath, dataObj) {
   });
 }
 
-/* ========= auto discovery для каталога ========= */
+/* -------------------- Catalog auto-discovery -------------------- */
 async function listTables() {
-  const rows = await dbAll(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`);
+  const rows = await dbAll(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+  );
   return rows.map((r) => r.name);
 }
 async function tableInfo(table) {
@@ -109,7 +131,6 @@ function buildSuppliersSelect(table, columns) {
   if (actCol) where.push(`COALESCE(${table}.${actCol},1)=1`);
   return `SELECT ${selects.join(", ")} FROM ${table} ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY ${nameCol}`;
 }
-
 async function rebuildCatalogJSON() {
   try {
     const tables = await listTables();
@@ -117,6 +138,7 @@ async function rebuildCatalogJSON() {
     const preferredSuppliers = ["suppliers", "vendors", "providers"];
     let productsSql = null;
     let suppliersSql = null;
+
     for (const name of [...preferredProducts, ...tables.filter((t) => !preferredProducts.includes(t))]) {
       if (!tables.includes(name)) continue;
       const cols = await tableInfo(name);
@@ -129,14 +151,17 @@ async function rebuildCatalogJSON() {
       const sql = buildSuppliersSelect(name, cols);
       if (sql) { suppliersSql = sql; break; }
     }
+
     const products = productsSql ? await dbAll(productsSql) : [];
     const suppliers = suppliersSql ? await dbAll(suppliersSql) : [];
+
     const payload = {
       updated_at: new Date().toISOString(),
       products,
       suppliers,
       _meta: { db_path: DB_PATH, tables_count: tables.length },
     };
+
     await writeJsonAtomic(CATALOG_PATH, payload);
     console.log(`catalog.json обновлён (${products.length} товаров, ${suppliers.length} поставщиков)`);
     return payload;
@@ -146,13 +171,91 @@ async function rebuildCatalogJSON() {
   }
 }
 
-/* ========= маршруты ========= */
+/* -------------------- Middleware -------------------- */
+app.use(cors());
+app.use(bodyParser.json());
 
-// теперь Express будет искать index, admin и staff в правильной папке
+/* -------------------- Helper page if file missing -------------------- */
+function listHtmlFiles(rootDir, maxDepth = 3) {
+  const results = [];
+  function walk(dir, depth) {
+    if (depth > maxDepth) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full, depth + 1);
+      else if (e.isFile() && e.name.endsWith(".html")) {
+        results.push(full);
+      }
+    }
+  }
+  walk(rootDir, 0);
+  return results;
+}
+
+function trySendHtml(res, filenames) {
+  for (const base of (PUB_DIR ? [PUB_DIR] : [])) {
+    for (const name of filenames) {
+      const p = path.join(base, name);
+      if (fs.existsSync(p)) {
+        return res.sendFile(p);
+      }
+    }
+  }
+  // fallback: покажем список html в проекте
+  const found = listHtmlFiles(process.cwd());
+  const list = found
+    .map((f) => path.relative(process.cwd(), f))
+    .sort()
+    .map((r) => `<li><code>/${r.replace(/\\/g, "/")}</code></li>`)
+    .join("");
+  return res
+    .status(200)
+    .send(
+      `<html><body style="font-family:system-ui;padding:20px">
+        <h3>Файл не найден</h3>
+        <p>Я не нашёл указанные файлы в <code>${PUB_DIR || "(папка не найдена)"}</code>.</p>
+        <p>Доступные HTML в проекте:</p>
+        <ul>${list || "<li><i>ничего не найдено</i></li>"}</ul>
+        <p>Подсказка: положи статику в <code>backend/public/</code> или <code>public/</code>.</p>
+        <p><a href="/catalog.json">catalog.json</a></p>
+      </body></html>`
+    );
+}
+
+/* -------------------- Routes -------------------- */
+
+// Корень: редирект в админку
 app.get("/", (req, res) => res.redirect("/admin"));
-app.get("/admin", (req, res) => res.sendFile(path.join(PUB_DIR, "admin.html")));
-app.get("/staff", (req, res) => res.sendFile(path.join(PUB_DIR, "staff.html")));
 
+// Админка
+app.get("/admin", (req, res) => {
+  if (PUB_DIR) {
+    // пробуем admin.html, index.html
+    const file = fs.existsSync(path.join(PUB_DIR, "admin.html"))
+      ? path.join(PUB_DIR, "admin.html")
+      : (fs.existsSync(path.join(PUB_DIR, "index.html"))
+          ? path.join(PUB_DIR, "index.html")
+          : null);
+    if (file) return res.sendFile(file);
+  }
+  return trySendHtml(res, ["admin.html", "index.html"]);
+});
+
+// Страница сотрудника
+app.get("/staff", (req, res) => {
+  if (PUB_DIR) {
+    const file = fs.existsSync(path.join(PUB_DIR, "staff.html"))
+      ? path.join(PUB_DIR, "staff.html")
+      : null;
+    if (file) return res.sendFile(file);
+  }
+  return trySendHtml(res, ["staff.html"]);
+});
+
+// Каталог
 app.get("/catalog.json", async (req, res) => {
   try {
     if (!fs.existsSync(CATALOG_PATH)) await rebuildCatalogJSON();
@@ -164,6 +267,7 @@ app.get("/catalog.json", async (req, res) => {
   }
 });
 
+// Ручная пересборка
 app.post("/admin/rebuild-catalog", async (req, res) => {
   try {
     const p = await rebuildCatalogJSON();
@@ -173,12 +277,17 @@ app.post("/admin/rebuild-catalog", async (req, res) => {
   }
 });
 
-app.get("/health", (req, res) => res.json({
-  ok: true,
-  db: !!db,
-  catalog_exists: fs.existsSync(CATALOG_PATH),
-  db_path: DB_PATH
-}));
+// Health
+app.get("/health", (req, res) =>
+  res.json({
+    ok: true,
+    db: !!db,
+    catalog_exists: fs.existsSync(CATALOG_PATH),
+    db_path: DB_PATH,
+    static_dir: PUB_DIR || null,
+  })
+);
 
-rebuildCatalogJSON().catch(err => console.warn("Initial catalog build failed:", err));
+/* -------------------- Init -------------------- */
+rebuildCatalogJSON().catch((err) => console.warn("Initial catalog build failed:", err));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
