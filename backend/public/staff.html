@@ -1,185 +1,27 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-  <title>Заявка — Сотрудник</title>
-  <link rel="stylesheet" href="admin.css" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Оформление заявки</title>
+  <link rel="stylesheet" href="./admin.css"/>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <style>
-    :root {
-      --bg: #f4f4f4;
-      --text: #1a1a1a;
-      --border: #ddd;
-      --primary: #0066ff;
-      --white: #fff;
-    }
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: system-ui, sans-serif;
-      margin: 0;
-      padding: 0;
-    }
-
-    .page { display:grid; grid-template-rows:auto 1fr auto; min-height:100dvh; }
-
-    header.page-header {
-      position:sticky; top:0; z-index:10;
-      background: var(--white);
-      border-bottom:1px solid var(--border);
-      box-shadow:0 2px 4px rgba(0,0,0,0.05);
-    }
-    header .container {
-      padding:12px 16px;
-    }
-    h2 { margin:0; font-size:1.25rem; }
-
-    .toolbar { display:flex; justify-content: flex-end; margin-top:8px; }
-    .btn { border:1px solid var(--border); background: var(--white); padding:6px 12px; border-radius:8px; cursor:pointer; }
-    .btn:hover { background:#f2f2f2; }
-
-    main.container { padding:16px; }
-
-    /* Группы */
-    .category {
-      background: var(--white);
-      border:1px solid var(--border);
-      border-radius:12px;
-      box-shadow:0 1px 3px rgba(0,0,0,0.08);
-      margin-bottom:12px;
-      overflow:hidden;
-      transition: all .3s ease;
-    }
-
-    .category-header {
-      padding:12px 16px;
-      font-weight:600;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      cursor:pointer;
-      background:var(--white);
-    }
-    .category-header:hover { background:#f9f9f9; }
-    .category-header span { flex:1; }
-    .category-header .caret {
-      transition: transform .2s ease;
-    }
-    .category.open .category-header .caret { transform: rotate(90deg); }
-
-    .category-items {
-      overflow:hidden;
-      max-height:0;
-      transition:max-height .35s ease;
-    }
-    .category.open .category-items {
-      max-height:2000px; /* достаточно, чтобы вместить все товары */
-    }
-
-    /* Товары */
-    .item {
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      background: var(--white);
-      border-top:1px solid var(--border);
-      padding:10px 16px;
-      transition: background .15s;
-    }
-    .item:first-child { border-top:none; }
-    .item:hover { background:#fafafa; }
-
-    .item-name { font-weight:500; flex:1; margin-right:10px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .item-unit { font-size:12px; color:#666; margin-left:4px; }
-
-    .qty-input {
-      width:80px;
-      text-align:center;
-      border:1px solid var(--border);
-      border-radius:6px;
-      padding:6px;
-      background:var(--white);
-      color:var(--text);
-    }
-
-    /* Рекомендации */
-    .reco {
-      margin-top:20px;
-      background: var(--white);
-      border:1px solid var(--border);
-      border-radius:12px;
-      box-shadow:0 1px 3px rgba(0,0,0,0.08);
-      padding:16px;
-    }
-    .reco h3 { margin:0 0 10px; }
-    .reco-list {
-      display:grid;
-      grid-template-columns:repeat(auto-fill, minmax(200px,1fr));
-      gap:8px;
-    }
-    .reco-item {
-      padding:8px 10px;
-      border:1px dashed var(--border);
-      border-radius:8px;
-      cursor:pointer;
-      background:#fafafa;
-      text-align:center;
-    }
-    .reco-item:hover { background:#f0f0f0; }
-
-    /* Нижняя панель */
-    footer {
-      position:sticky; bottom:0;
-      background:var(--white);
-      border-top:1px solid var(--border);
-      box-shadow:0 -2px 4px rgba(0,0,0,0.05);
-    }
-    footer .inner {
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      padding:12px 16px;
-    }
-    footer .btn-primary {
-      background: var(--primary);
-      color:#fff;
-      border:none;
-      border-radius:8px;
-      padding:8px 16px;
-      cursor:pointer;
-    }
-    footer .btn-primary:hover { opacity:0.9; }
-
-  </style>
 </head>
 <body>
-<div class="page">
-  <header class="page-header">
-    <div class="container">
-      <h2>Оформление заявки</h2>
-      <div class="toolbar">
-        <button id="toggleAll" class="btn">Развернуть все</button>
-      </div>
-    </div>
-  </header>
+  <div class="container">
+    <h2>Оформление заявки</h2>
+    <div id="form"></div>
 
-  <main class="container">
-    <div id="categories"></div>
-
-    <div id="reco" class="reco" style="display:none">
-      <h3>Рекомендации</h3>
-      <div id="recoList" class="reco-list"></div>
+    <div class="spaced" style="margin-top: 1rem">
+      <button id="btnReco" class="btn" type="button">Рекомендации</button>
+      <button id="btnSubmit" class="btn" type="button">Отправить заявку</button>
     </div>
-  </main>
 
-  <footer>
-    <div class="inner">
-      <div id="count">Выбрано: 0 позиций</div>
-      <button id="sendBtn" class="btn-primary">Отправить заявку</button>
-    </div>
-  </footer>
-</div>
-<script src="staff.js"></script>
+    <div id="reco" class="list" style="margin-top: 1rem"></div>
+
+    <div id="result" class="card" style="display:none; margin-top:1rem"></div>
+  </div>
+
+  <script src="./staff.js" defer></script>
 </body>
 </html>
