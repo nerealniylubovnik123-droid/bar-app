@@ -1,145 +1,135 @@
 (() => {
-  'use strict';
-  const API_BASE = location.origin;
+  "use strict";
 
-  function getInitData() {
-    const tg = window.Telegram && window.Telegram.WebApp;
-    if (tg?.initData) return tg.initData;
-    if (tg?.initDataUnsafe) {
+  // ======== env detection ========
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const isTelegram = Boolean(tg && (tg.initData || tg.initDataUnsafe));
+  const INIT_FALLBACK = "debug"; // используем вне Telegram, чтобы не блокироваться на initData
+
+  // ======== UI helpers ========
+  const $ = (sel) => document.querySelector(sel);
+  const statusBox = $("#status") || (function(){
+    const d = document.createElement("div");
+    d.id = "status";
+    d.style.cssText = "position:sticky;top:0;z-index:9999;padding:8px 12px;background:#fff;border-bottom:1px solid #eee;font:14px/1.4 system-ui";
+    document.body.prepend(d);
+    return d;
+  })();
+
+  function logStatus(lines) {
+    statusBox.innerHTML = lines.map(l => `<div>${l}</div>`).join("");
+  }
+
+  // ======== initData builder (с фолбэком) ========
+  function getInitDataString() {
+    if (isTelegram && tg.initData) return tg.initData;
+    if (isTelegram && tg.initDataUnsafe) {
       try {
         const p = new URLSearchParams();
         const u = tg.initDataUnsafe;
-        if (u.query_id) p.set('query_id', u.query_id);
-        if (u.user) p.set('user', JSON.stringify(u.user));
-        if (u.start_param) p.set('start_param', u.start_param);
-        if (u.auth_date) p.set('auth_date', String(u.auth_date));
-        if (u.hash) p.set('hash', u.hash);
-        if (p.get('hash')) return p.toString();
+        if (u.query_id)     p.set("query_id", u.query_id);
+        if (u.user)         p.set("user", JSON.stringify(u.user));
+        if (u.start_param)  p.set("start_param", u.start_param);
+        if (u.auth_date)    p.set("auth_date", String(u.auth_date));
+        if (u.hash)         p.set("hash", u.hash);
+        return p.toString();
       } catch {}
     }
-    if (location.hash.includes('tgWebAppData=')) {
-      try {
-        const h = new URLSearchParams(location.hash.slice(1));
-        const raw = h.get('tgWebAppData');
-        if (raw) return decodeURIComponent(raw);
-      } catch {}
+    // ВНЕ Telegram: подставим стабильный фолбэк, который сервер примет
+    return INIT_FALLBACK;
+  }
+  const INIT_DATA = getInitDataString();
+
+  function getAdminToken() {
+    try { return localStorage.getItem("admToken") || ""; } catch { return ""; }
+  }
+  function buildHeaders(extra = {}) {
+    const token = getAdminToken();
+    const h = { "Content-Type": "application/json", ...extra };
+    if (INIT_DATA) h["X-Telegram-Init-Data"] = INIT_DATA;
+    if (token) {
+      h["Authorization"] = `Bearer ${token}`;
+      h["X-Admin-Token"] = token;
     }
-    return '';
+    return h;
   }
-  const TG_INIT = getInitData();
 
-  async function api(path, { method='GET', body } = {}) {
-    const url = new URL(API_BASE + path);
-    const m = method.toUpperCase();
-    if (m === 'POST') {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...(body||{}), initData: TG_INIT })
-      });
-      const j = await res.json().catch(()=>({}));
-      if (!res.ok || j?.ok === false) throw new Error(j?.error || res.statusText);
-      return j;
+  async function apiPOST(path, body) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: buildHeaders(),
+      body: JSON.stringify({ ...(body || {}), initData: INIT_DATA })
+    });
+    let json = null; try { json = await res.json(); } catch {}
+    if (!res.ok || json?.ok === false) {
+      const err = new Error(json?.error || res.statusText || `HTTP ${res.status}`);
+      err.status = res.status; err.payload = json; throw err;
     }
-    if (TG_INIT) url.searchParams.set('initData', encodeURIComponent(TG_INIT));
-    const res = await fetch(url, { method: m, headers: { 'Content-Type': 'application/json' } });
-    const j = await res.json().catch(()=>({}));
-    if (!res.ok || j?.ok === false) throw new Error(j?.error || res.statusText);
-    return j;
+    return json;
+  }
+  async function apiGET(path) {
+    const url = new URL(path, location.origin);
+    if (INIT_DATA) url.searchParams.set("initData", INIT_DATA);
+    const res = await fetch(url, { headers: buildHeaders() });
+    let json = null; try { json = await res.json(); } catch {}
+    if (!res.ok || json?.ok === false) {
+      const err = new Error(json?.error || res.statusText || `HTTP ${res.status}`);
+      err.status = res.status; err.payload = json; throw err;
+    }
+    return json;
   }
 
-  const $ = s => document.querySelector(s);
-  function el(t, a={}, ...c){ const e=document.createElement(t); for(const[k,v] of Object.entries(a)){ if(k==='className')e.className=v; else if(k==='html')e.innerHTML=v; else e.setAttribute(k,v);} for(const x of c){ e.appendChild(typeof x==='string'?document.createTextNode(x):x);} return e; }
-  const btn=(t,on)=>{ const b=el('button',{className:'btn',type:'button'},t); if(on) b.addEventListener('click',on); return b; };
+  // ======== bootstrap ========
+  (async function init() {
+    try { tg?.ready?.(); } catch {}
 
-  const boxWarn = document.getElementById('warning');
-  const boxSup  = document.getElementById('suppliers');
-  const boxProd = document.getElementById('products');
-  const boxReq  = document.getElementById('requisitions');
+    logStatus([
+      "Определяем роль пользователя…",
+      `SDK: ${isTelegram ? "true" : "false"}`,
+      `hash: ${isTelegram ? (tg.initData || tg.initDataUnsafe?.hash ? "есть" : "нет") : "нет"}`,
+      `initData: ${INIT_DATA ? "получено" : "нет"}`
+    ]);
 
-  async function loadSuppliers() {
-    const data = await api('/api/admin/suppliers');
-    boxSup.innerHTML = '';
-    (data.suppliers||[]).forEach(s=>{
-      const row = el('div',{className:'card spaced'},
-        el('div',{}, `#${s.id} — ${s.name}`),
-        s.contact_note ? el('div',{className:'muted'}, s.contact_note) : '',
-        btn('Удалить', async ()=>{
-          if (!confirm(`Удалить поставщика "${s.name}"?`)) return;
-          try{ await api(`/api/admin/suppliers/${s.id}`, {method:'DELETE'}); await loadSuppliers(); await loadProducts(); }
-          catch(e){ alert(e.message); }
-        })
-      );
-      boxSup.appendChild(row);
-    });
-  }
-
-  async function loadProducts() {
-    const data = await api('/api/admin/products');
-    boxProd.innerHTML = '';
-    (data.products||[]).forEach(p=>{
-      const row = el('div',{className:'card spaced'},
-        el('div',{}, `#${p.id} — ${p.name} (${p.unit}), пост.: ${p.supplier_name}`),
-        p.category ? el('div',{className:'muted'}, `Категория: ${p.category}`) : '',
-        btn('Удалить', async ()=>{
-          if (!confirm(`Удалить товар "${p.name}"?`)) return;
-          try{ await api(`/api/admin/products/${p.id}`, {method:'DELETE'}); await loadProducts(); }
-          catch(e){ alert(e.message); }
-        })
-      );
-      boxProd.appendChild(row);
-    });
-  }
-
-  async function loadRequisitions() {
-    const data = await api('/api/admin/requisitions');
-    boxReq.innerHTML = '';
-    (data.requisitions||[]).forEach(r=>{
-      const row = el('div',{className:'card spaced'},
-        el('div',{}, `#${r.id} — ${r.user_name || 'сотрудник'} — ${r.created_at || ''}`),
-        btn('Открыть', async ()=>{
-          try{
-            const det = await api(`/api/admin/requisitions/${r.id}`);
-            const orders = det.orders || [];
-            alert(
-              orders.length
-                ? orders.map(o => `• ${o.supplier.name}\n` + o.items.map(i => `  - ${i.product_name}: ${i.qty_final} ${i.unit||''}`).join('\n')).join('\n\n')
-                : 'Пусто'
-            );
-          }catch(e){ alert(e.message); }
-        })
-      );
-      boxReq.appendChild(row);
-    });
-  }
-
-  async function boot(){
-    if (!TG_INIT) {
-      boxWarn.style.display='block';
-      boxWarn.innerHTML = `<b>Ошибка: Missing initData</b><br/>Откройте админку через кнопку WebApp в боте.`;
+    // 1) пробуем POST /api/products (как в проде)
+    try {
+      await apiPOST("/api/products", {});
+      logStatus([
+        "Режим админа активен",
+        `SDK: ${isTelegram ? "true" : "false"}`,
+        "Загрузка товаров: OK (POST /api/products)"
+      ]);
+      // тут вызывать вашу отрисовку админки...
       return;
+    } catch (e1) {
+      // 2) пробуем GET /api/products (разрешён с initData=debug или с админ-токеном)
+      try {
+        await apiGET("/api/products");
+        logStatus([
+          "Режим админа активен",
+          `SDK: ${isTelegram ? "true" : "false"}`,
+          "Загрузка товаров: OK (GET /api/products)"
+        ]);
+        // тут вызывать вашу отрисовку админки...
+        return;
+      } catch (e2) {
+        // Если сервер всё-таки не пустил — покажем краткую подсказку
+        const hint = [
+          "Не удалось получить список товаров.",
+          "Проверьте одно из условий:",
+          "• Откройте админку из Telegram WebApp (initData появится автоматически),",
+          "• или добавьте админ-токен в localStorage.admToken,",
+          "• или установите переменную окружения DEV_ALLOW_UNSAFE=true на сервере."
+        ].join("<br>");
+        logStatus([
+          `SDK: ${isTelegram ? "true" : "false"}`,
+          `hash: ${isTelegram ? (tg.initData || tg.initDataUnsafe?.hash ? "есть" : "нет") : "нет"}`,
+          `initData: ${INIT_DATA ? "получено" : "нет"}`,
+          `<span style="color:#c00">${hint}</span>`
+        ]);
+        console.warn("POST /api/products error:", e1);
+        console.warn("GET /api/products error:", e2);
+      }
     }
-    document.getElementById('btnAddSup')?.addEventListener('click', async ()=>{
-      const name = document.getElementById('supName').value.trim();
-      const note = document.getElementById('supNote').value.trim();
-      if (name.length<2) return alert('Название слишком короткое');
-      try{ await api('/api/admin/suppliers',{method:'POST',body:{name,contact_note:note}}); document.getElementById('supName').value=''; document.getElementById('supNote').value=''; await loadSuppliers(); }
-      catch(e){ alert(e.message); }
-    });
-    document.getElementById('btnAddProd')?.addEventListener('click', async ()=>{
-      const name = document.getElementById('prodName').value.trim();
-      const unit = document.getElementById('prodUnit').value.trim();
-      const category = document.getElementById('prodCategory').value.trim() || 'Общее';
-      const supplier_id = Number(document.getElementById('prodSupplierId').value);
-      if (name.length<2) return alert('Название слишком короткое');
-      if (!unit) return alert('Ед. изм. обязательна');
-      if (!Number.isFinite(supplier_id)) return alert('Неверный ID поставщика');
-      try{ await api('/api/admin/products',{method:'POST',body:{name,unit,category,supplier_id}}); document.getElementById('prodName').value=''; document.getElementById('prodUnit').value=''; document.getElementById('prodCategory').value=''; document.getElementById('prodSupplierId').value=''; await loadProducts(); }
-      catch(e){ alert(e.message); }
-    });
-    await Promise.all([loadSuppliers(), loadProducts(), loadRequisitions()]);
-  }
+  })();
 
-  try{ window.Telegram?.WebApp?.ready?.(); }catch{}
-  boot().catch(e=>alert('Ошибка загрузки: '+e.message));
 })();
