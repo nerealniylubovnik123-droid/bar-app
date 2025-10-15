@@ -1,12 +1,12 @@
 // ===== server.cjs =====
-import express from "express";
-import sqlite3 from "sqlite3";
-import path from "path";
-import fs from "fs";
-import TelegramBot from "node-telegram-bot-api";
-import bodyParser from "body-parser";
-import cors from "cors";
-import dotenv from "dotenv";
+const express = require("express");
+const sqlite3 = require("sqlite3");
+const path = require("path");
+const fs = require("fs");
+const TelegramBot = require("node-telegram-bot-api");
+const bodyParser = require("body-parser");
+const cors = require("cors");
+const dotenv = require("dotenv");
 
 dotenv.config();
 
@@ -85,7 +85,7 @@ app.get("/catalog.json", async (req, res) => {
   }
 });
 
-// ============ Пример проверки работы ============
+// ============ Проверка ============
 app.get("/health", (req, res) => {
   res.json({ ok: true, db: !!db, catalog: fs.existsSync(CATALOG_PATH) });
 });
