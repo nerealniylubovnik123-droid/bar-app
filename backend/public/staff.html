@@ -2,11 +2,10 @@
 <html lang="ru" id="staff-page">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Cache-Control" content="no-store" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>Оформление заявки</title>
+  <title>Оформить заявку</title>
   <link rel="icon" href="/favicon.ico" />
-  <link rel="stylesheet" href="/admin.css?v=20251015-5" />
+  <link rel="stylesheet" href="/admin.css" />
   <style>
     :root {
       --max-w: 980px;
@@ -25,10 +24,11 @@
     html, body { height: 100%; }
     body {
       margin: 0;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
       background: var(--bg);
       color: #0f172a;
       -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
     }
 
     .wrap {
@@ -43,6 +43,7 @@
       box-shadow: var(--shadow);
     }
 
+    /* Заголовок */
     .page-head {
       display: flex;
       align-items: center;
@@ -53,6 +54,7 @@
     .page-title { font-size: 20px; font-weight: 700; margin: 0; }
     .me { font-size: 12px; opacity: .7; white-space: nowrap; }
 
+    /* Панель */
     .toolbar {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -61,7 +63,7 @@
       margin-bottom: 12px;
     }
 
-    /* Категории */
+    /* Категории (accordion) */
     details.supplier-section {
       margin-bottom: 18px;
       border: 1px solid var(--border-2);
@@ -69,15 +71,18 @@
       overflow: hidden;
       background: #fff;
     }
-    details.supplier-section[open] { box-shadow: var(--shadow); }
+    details.supplier-section[open] {
+      box-shadow: var(--shadow);
+    }
     details.supplier-section > summary {
       list-style: none;
       cursor: pointer;
       background: var(--bg-soft);
       border-bottom: 1px solid var(--border-2);
       padding: 0;
+      outline: none;
     }
-
+    /* Содержимое summary — своя шапка */
     .supplier-head {
       display: flex;
       align-items: center;
@@ -102,8 +107,11 @@
       transition: transform .15s ease;
       margin-right: 4px;
     }
-    details[open] .caret { transform: rotate(45deg); }
+    details[open] .caret {
+      transform: rotate(45deg);
+    }
 
+    /* Сетка товаров */
     .products {
       display: grid;
       grid-template-columns: 1fr;
@@ -114,6 +122,7 @@
     @media (min-width: 640px) { .products { grid-template-columns: 1fr 1fr; } }
     @media (min-width: 920px) { .products { grid-template-columns: 1fr 1fr 1fr; } }
 
+    /* Карточка товара */
     .product {
       display: grid;
       grid-template-rows: auto auto auto;
@@ -123,19 +132,20 @@
       padding: 10px;
       min-height: 110px;
       transition: box-shadow .15s ease, border-color .15s ease;
+      overflow: hidden;
       background: #fff;
     }
     .product:hover {
       border-color: #dfe6ee;
       box-shadow: 0 2px 14px rgba(10, 20, 40, .06);
     }
-
     .product-name { font-weight: 600; line-height: 1.25; word-break: break-word; }
     .product-meta {
       font-size: 12px; color: var(--muted);
       display: flex; gap: 8px; flex-wrap: wrap;
     }
 
+    /* Количество */
     .qty-row {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -150,6 +160,8 @@
       padding: 0 10px;
       font-size: 14px;
       line-height: 40px;
+      outline: none;
+      transition: border-color .15s ease, box-shadow .15s ease;
       appearance: textfield;
       -moz-appearance: textfield;
     }
@@ -163,6 +175,8 @@
       margin: 0;
     }
 
+    /* Кнопки */
+    .qty-controls { display: inline-grid; grid-auto-flow: column; gap: 6px; }
     .btn {
       height: 40px;
       padding: 0 12px;
@@ -171,43 +185,51 @@
       background: #fff;
       cursor: pointer;
       font-size: 14px;
-      transition: background .15s ease;
+      transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
       white-space: nowrap;
+      user-select: none;
     }
     .btn:hover { background: #f7fafc; }
+    .btn:active { background: #eef3f8; }
     .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
     .btn.primary:hover { filter: brightness(1.03); }
-    .btn.square { width: 40px; padding: 0; }
+    .btn.primary:active { filter: brightness(.96); }
+    .btn.square { width: 40px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
 
+    /* Итоговая панель */
     .footer {
       position: sticky;
-      bottom: 0;
-      background: rgba(246,247,249,.85);
+      bottom: 0; left: 0; right: 0;
+      margin-top: 14px;
+      padding: 12px;
+      background: rgba(246,247,249,.75);
       backdrop-filter: blur(6px);
       border-top: 1px solid #e6ebf1;
       display: grid;
       grid-template-columns: 1fr auto;
-      align-items: center;
       gap: 10px;
-      padding: 12px;
-      margin-top: 14px;
+      align-items: center;
     }
-
     .summary { font-size: 14px; color: #475569; }
-    .muted { color: #7b8a9a; }
 
-    .error, .success {
+    /* Сообщения */
+    .hidden { display: none !important; }
+    .muted { color: #7b8a9a; }
+    .error {
+      color: #b42318; background: #fee4e2; border: 1px solid #fecdca;
       border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; display: none;
     }
-    .error { color: #b42318; background: #fee4e2; border: 1px solid #fecdca; }
-    .success { color: #05603a; background: #e3f6ed; border: 1px solid #a3e3c6; }
+    .success {
+      color: #05603a; background: #e3f6ed; border: 1px solid #a3e3c6;
+      border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; display: none;
+    }
   </style>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
   <div class="wrap">
     <header class="page-head">
-      <h1 class="page-title">Оформление заявки • v5</h1>
+      <h1 class="page-title">Оформление заявки</h1>
       <div class="me" id="meBox">…</div>
     </header>
 
@@ -216,17 +238,19 @@
 
     <section class="card toolbar">
       <div class="muted">Выберите нужные позиции и укажите количество.</div>
-      <button id="clearBtn" class="btn" type="button">Очистить</button>
+      <button id="clearBtn" class="btn" type="button" title="Очистить все количества">Очистить</button>
     </section>
 
     <main id="suppliersContainer"></main>
 
     <footer class="footer card">
-      <div class="summary">Выбрано позиций: <b id="itemsCount">0</b></div>
+      <div class="summary">
+        Выбрано позиций: <b id="itemsCount">0</b>
+      </div>
       <button id="submitBtn" class="btn primary" type="button">Отправить заявку</button>
     </footer>
   </div>
 
-  <script src="/js/staff.js?v=20251015-5"></script>
+  <script src="/js/staff.js"></script>
 </body>
 </html>
