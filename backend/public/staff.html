@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
   <title>Заявка — Сотрудник</title>
   <link rel="stylesheet" href="admin.css" />
-  <!-- Telegram WebApp SDK нужен для initData -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     /* --- минимальные стили именно под страницу сотрудника --- */
@@ -18,7 +17,6 @@
       border-bottom:1px solid var(--border);
     }
     .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-    .toolbar .grow { flex:1 1 220px }
 
     /* Категории как аккордеоны */
     .categories { display:flex; flex-direction:column; gap:12px; }
@@ -28,19 +26,23 @@
       border-radius: 14px;
       box-shadow: var(--shadow);
       overflow: clip;
+      /* фикс "пляски" при сворачивании */
+      contain: layout paint;
     }
-    details.category[open] summary::after { transform: rotate(90deg); }
     details.category summary {
       list-style:none; cursor:pointer;
       display:flex; align-items:center; justify-content:space-between; gap:12px;
       padding:12px 14px; font-weight:600; user-select:none;
+      scroll-margin-top: 12px;
     }
+    details.category[open] summary::after { transform: rotate(90deg); }
     details.category summary::-webkit-details-marker { display:none; }
     details.category summary .meta { display:flex; align-items:center; gap:8px; color:var(--text-muted); font-weight:500; }
     details.category summary::after {
       content:"›"; display:inline-flex; align-items:center; justify-content:center;
       width:1.25rem; height:1.25rem; border-radius:999px; border:1px solid var(--border);
       font-weight:900; line-height:1; transition:transform .18s ease;
+      flex: 0 0 1.25rem;
     }
 
     /* Список товаров */
@@ -59,10 +61,24 @@
     }
     .item-unit{ color:var(--text-muted); font-size:12px; }
 
-    /* Количество — в одной линии с названием */
+    /* Количество — в одной линии с названием, без +/- */
     .qty{ display:flex; align-items:center; gap:6px; flex:0 0 auto; }
-    .qty input[type="number"]{ width:84px; text-align:center; padding:8px 6px; border-radius:10px; }
-    .qty .btn{ height:34px; width:34px; padding:0; border-radius:10px; }
+    .qty input[type="number"]{ width:100px; text-align:center; padding:8px 8px; border-radius:10px; }
+
+    /* Рекомендации */
+    .reco-card .reco-grid{
+      display:grid; gap:8px;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    }
+    .reco-item{
+      display:flex; align-items:center; gap:8px;
+      border:1px dashed var(--border); border-radius:12px; padding:8px 10px;
+      background:color-mix(in oklab, var(--bg-card) 95%, #000 5%);
+      cursor: pointer;
+      transition: transform .05s ease, background .12s ease;
+    }
+    .reco-item:hover{ transform: translateY(-1px); }
+    .reco-item .name{ flex:1 1 auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
     /* Панель отправки */
     .submitbar{
@@ -79,10 +95,6 @@
       color:var(--text-muted); text-align:center; padding:14px 10px;
       border:1px dashed var(--border); border-radius:12px; background: var(--bg-elev);
     }
-    @media (max-width:720px){
-      .qty input[type="number"]{ width:74px; }
-      .toolbar .grow { flex:1 1 160px }
-    }
   </style>
 </head>
 <body>
@@ -94,17 +106,23 @@
         <span class="pill">Страница сотрудника</span>
       </div>
       <div class="card spaced toolbar" style="margin-top:8px">
-        <input id="search" class="grow" type="search" placeholder="Поиск товара…" autocomplete="off"/>
-        <button id="btnClear"  class="btn btn--ghost" type="button">Сбросить</button>
-        <button id="btnExpand" class="btn btn--ghost" type="button" data-mode="open">Развернуть все</button>
+        <button id="btnExpand" class="btn btn--ghost" type="button" data-mode="close">Свернуть все</button>
       </div>
     </div>
   </header>
 
   <main class="container">
-    <!-- Блок поставщика удалён намеренно -->
+    <!-- Блок поставщика удалён -->
     <div id="categories" class="categories">
       <div class="empty">Загружаю список товаров…</div>
+    </div>
+
+    <div id="reco" class="card reco-card" style="margin-top:12px; display:none">
+      <div class="spaced">
+        <h3 style="margin:0">Рекомендации к заявке</h3>
+        <span class="muted">Популярные позиции из выбранных категорий</span>
+      </div>
+      <div id="recoGrid" class="reco-grid" style="margin-top:10px"></div>
     </div>
   </main>
 
