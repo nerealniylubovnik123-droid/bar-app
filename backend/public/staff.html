@@ -7,7 +7,8 @@
   <link rel="stylesheet" href="admin.css" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    /* --- минимальные стили именно под страницу сотрудника --- */
+    /* стабильный скролл и одинаковая ширина скроллбара */
+    html { scrollbar-gutter: stable; }
 
     .page { display:grid; grid-template-rows:auto 1fr auto; min-height:100dvh; }
     header.page-header {
@@ -18,41 +19,45 @@
     }
     .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 
-    /* Список групп (без <details>, чтобы не было скачков) */
+    /* Список групп (без <details>) */
     .categories { display:flex; flex-direction:column; gap:12px; }
     .group {
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: 14px;
       box-shadow: var(--shadow);
-      color: var(--text);
+      color: var(--text) !important;
     }
+    .group * { color: var(--text) !important; } /* жестко фиксируем цвет внутри группы */
+
     .group-header {
       display:flex; align-items:center; justify-content:space-between; gap:12px;
       padding:12px 14px;
       user-select:none;
       cursor:pointer;
-      color: var(--text);
     }
     .group-title {
       display:flex; align-items:center; gap:8px; font-weight:600;
-      color: var(--text);
       min-width: 0;
     }
     .group-title .name {
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .group-meta { display:flex; align-items:center; gap:8px; color: var(--text-muted); font-weight:500; }
+    .group-meta { display:flex; align-items:center; gap:8px; color: var(--text-muted) !important; font-weight:500; }
     .group-caret {
       width:1.25rem; height:1.25rem; border-radius:999px; border:1px solid var(--border);
       display:inline-flex; align-items:center; justify-content:center;
       font-weight:900; line-height:1; transition:transform .18s ease;
-      flex: 0 0 1.25rem; color: var(--text);
+      flex: 0 0 1.25rem;
     }
     .group[data-open="true"] .group-caret { transform: rotate(90deg); }
 
-    .items { display:flex; flex-direction:column; gap:6px; padding:8px 10px 12px; }
-    .items[hidden] { display:none; }
+    /* Контент группы: без display:none, чтобы не было резких перепрыгиваний scroll anchoring */
+    .items {
+      display:block;
+      padding:8px 10px 12px;
+    }
+    .items.is-collapsed { display:none; } /* мы компенсируем скролл в JS */
 
     /* Строка товара */
     .item-row{
@@ -61,21 +66,24 @@
       border:1px solid var(--border);
       border-radius:12px;
       padding:8px 10px;
-      color: var(--text);
     }
     .item-title{
       flex:1 1 auto; min-width:120px;
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-      font-weight:520; color: var(--text);
+      font-weight:520;
     }
-    .item-unit{ color:var(--text-muted); font-size:12px; }
+    .item-unit{ color:var(--text-muted) !important; font-size:12px; }
 
-    /* Количество — в одной линии с названием, без +/- */
+    /* Количество — в одной линии, без +/- */
     .qty{ display:flex; align-items:center; gap:6px; flex:0 0 auto; }
-    .qty input[type="number"]{ width:100px; text-align:center; padding:8px 8px; border-radius:10px; }
+    .qty input[type="number"]{
+      width:100px; text-align:center; padding:8px 8px; border-radius:10px;
+      color: var(--text) !important; background: var(--bg-elev); border:1px solid var(--border);
+    }
+    .qty input::placeholder{ color: color-mix(in oklab, var(--text) 40%, transparent) !important; }
 
     /* Рекомендации */
-    .reco-card { color: var(--text); }
+    .reco-card { color: var(--text) !important; }
     .reco-card .reco-grid{
       display:grid; gap:8px;
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -86,7 +94,6 @@
       background:color-mix(in oklab, var(--bg-card) 95%, #000 5%);
       cursor: pointer;
       transition: transform .05s ease, background .12s ease;
-      color: var(--text);
     }
     .reco-item:hover{ transform: translateY(-1px); }
     .reco-item .name{ flex:1 1 auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -97,14 +104,14 @@
       background: color-mix(in oklab, var(--bg-card) 92%, transparent);
       border-top:1px solid var(--border);
       backdrop-filter: blur(6px);
-      color: var(--text);
+      color: var(--text) !important;
     }
     .submitbar .inner{ display:flex; align-items:center; gap:12px; padding:12px 14px; }
-    .submitbar .summary{ display:flex; align-items:center; gap:10px; color:var(--text-muted); }
+    .submitbar .summary{ display:flex; align-items:center; gap:10px; color:var(--text-muted) !important; }
     .submitbar .summary .dot{ width:8px; height:8px; border-radius:999px; background:var(--primary); }
 
     .empty{
-      color:var(--text-muted); text-align:center; padding:14px 10px;
+      color:var(--text-muted) !important; text-align:center; padding:14px 10px;
       border:1px dashed var(--border); border-radius:12px; background: var(--bg-elev);
     }
   </style>
@@ -114,7 +121,7 @@
   <header class="page-header">
     <div class="container">
       <div class="spaced">
-        <h2 style="color:var(--text)">Оформление заявки</h2>
+        <h2 style="color:var(--text) !important;">Оформление заявки</h2>
         <span class="pill">Страница сотрудника</span>
       </div>
       <div class="card spaced toolbar" style="margin-top:8px">
@@ -124,15 +131,13 @@
   </header>
 
   <main class="container">
-    <!-- Блок поставщика удалён -->
     <div id="categories" class="categories">
       <div class="empty">Загружаю список товаров…</div>
     </div>
 
     <div id="reco" class="card reco-card" style="margin-top:12px; display:none">
       <div class="spaced">
-        <h3 style="margin:0; color:var(--text)">Рекомендации к заявке</h3>
-        <!-- Подзаголовок убран по просьбе -->
+        <h3 style="margin:0; color:var(--text) !important;">Рекомендации к заявке</h3>
       </div>
       <div id="recoGrid" class="reco-grid" style="margin-top:10px"></div>
     </div>

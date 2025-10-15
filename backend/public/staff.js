@@ -3,7 +3,7 @@
 
   const API_BASE = location.origin;
 
-  /* ======== initData как в исходнике (GET /api/products) ======== */
+  /* ======== initData (как в исходнике) ======== */
   function getInitDataString() {
     const tg = window.Telegram && window.Telegram.WebApp;
     if (tg?.initData) return tg.initData;
@@ -75,7 +75,7 @@
   const state = {
     products: [],          // {id,name,unit,category}
     cart: new Map(),       // productId -> qty
-    expandedAll: false,    // по умолчанию список свёрнут, "Развернуть все"
+    expandedAll: false,    // старт: свёрнуто
   };
 
   /* ================== Utils ================== */
@@ -101,7 +101,7 @@
     return Array.from(map.entries()).sort((a,b)=>a[0].localeCompare(b[0],'ru',{sensitivity:'base'}));
   }
 
-  /* ================== Render (без <details>) ================== */
+  /* ================== Render ================== */
   function itemRowHtml(p){
     const qty = state.cart.get(p.id) ?? '';
     const unit = p.unit ? `<span class="item-unit">(${escapeHtml(p.unit)})</span>` : '';
@@ -117,20 +117,17 @@
 
   function groupHtml(cat, list){
     const items = list.map(p => itemRowHtml(p)).join('');
-    // items изначально hidden, если expandedAll = false
-    const hiddenAttr = state.expandedAll ? '' : 'hidden';
+    const collapsedClass = state.expandedAll ? '' : 'is-collapsed';
     return `
       <div class="group" data-category="${escapeHtml(cat)}" data-open="${state.expandedAll}">
         <div class="group-header" data-role="toggle">
-          <div class="group-title">
-            <span class="name">${escapeHtml(cat)}</span>
-          </div>
+          <div class="group-title"><span class="name">${escapeHtml(cat)}</span></div>
           <div class="group-meta">
             <span class="badge">${list.length}</span>
             <span class="group-caret">›</span>
           </div>
         </div>
-        <div class="items" ${hiddenAttr}>
+        <div class="items ${collapsedClass}">
           ${items}
         </div>
       </div>
@@ -141,38 +138,43 @@
     const grouped = groupByCategory(state.products);
     if(!grouped.length){
       els.categories.innerHTML = `<div class="empty">Товары не найдены</div>`;
-      updateCounter(); return;
+    } else {
+      els.categories.innerHTML = grouped.map(([cat, list]) => groupHtml(cat, list)).join('');
     }
-    els.categories.innerHTML = grouped.map(([cat, list]) => groupHtml(cat, list)).join('');
     attachHandlers();
     updateCounter();
     renderRecommendations();
-    // Обновим состояние кнопки
     els.btnExpand.dataset.mode = state.expandedAll ? 'close' : 'open';
     els.btnExpand.textContent  = state.expandedAll ? 'Свернуть все' : 'Развернуть все';
   }
 
   function attachHandlers(){
-    // Тоггл групп с компенсацией скролла (чтобы «не прыгало»)
+    // Переключение группы с ЖЁСТКОЙ компенсацией скролла по заголовку
     els.categories.querySelectorAll('.group').forEach(groupEl => {
       const header = groupEl.querySelector('.group-header[data-role="toggle"]');
       const items  = groupEl.querySelector('.items');
       header.addEventListener('click', () => {
         const wasOpen = groupEl.getAttribute('data-open') === 'true';
-        const beforeTop = header.getBoundingClientRect().top;
 
-        // Toggle
-        const nowOpen = !wasOpen;
-        groupEl.setAttribute('data-open', String(nowOpen));
-        items.hidden = !nowOpen;
+        // Сохраняем положение заголовка в viewport
+        const before = header.getBoundingClientRect().top;
 
-        // Компенсация сдвига
+        // Мгновенно переключаем
+        groupEl.setAttribute('data-open', String(!wasOpen));
+        items.classList.toggle('is-collapsed', wasOpen);
+
+        // Жёсткая компенсация — два кадра для полной перерасчётки
         requestAnimationFrame(() => {
-          const afterTop = header.getBoundingClientRect().top;
-          const diff = afterTop - beforeTop;
-          if (Math.abs(diff) > 1) {
-            window.scrollBy({ top: diff, left: 0, behavior: 'auto' });
-          }
+          requestAnimationFrame(() => {
+            const after = header.getBoundingClientRect().top;
+            const diff = after - before;
+            if (Math.abs(diff) > 0.5) {
+              const prevBehavior = document.documentElement.style.scrollBehavior;
+              document.documentElement.style.scrollBehavior = 'auto';
+              window.scrollBy(0, diff);
+              document.documentElement.style.scrollBehavior = prevBehavior || '';
+            }
+          });
         });
       });
     });
@@ -182,7 +184,7 @@
       const id = row.getAttribute('data-id');
       const input = row.querySelector('.qty-input');
       input.addEventListener('input', () => {
-        const v = Math.max(0, safeNum(input.value));
+        const v = Math.max(0, Number(input.value));
         if(!v){ state.cart.delete(id); input.value = ''; }
         else { state.cart.set(id, v); }
         updateCounter();
@@ -191,7 +193,7 @@
     });
   }
 
-  /* ================== Рекомендации (кликаем — раскрываем и фокусируем) ================== */
+  /* ================== Рекомендации (клик — раскрыть и сфокусировать) ================== */
   function renderRecommendations(){
     const selectedIds = new Set(state.cart.keys());
     const selectedCats = new Set(
@@ -229,19 +231,24 @@
           const header = group.querySelector('.group-header');
           const items  = group.querySelector('.items');
 
-          // раскрываем, если свернуто
           if (group.getAttribute('data-open') !== 'true') {
-            const beforeTop = header.getBoundingClientRect().top;
+            const before = header.getBoundingClientRect().top;
             group.setAttribute('data-open','true');
-            items.hidden = false;
+            items.classList.remove('is-collapsed');
             requestAnimationFrame(() => {
-              const afterTop = header.getBoundingClientRect().top;
-              const diff = afterTop - beforeTop;
-              if (Math.abs(diff) > 1) window.scrollBy({ top: diff, left: 0, behavior: 'auto' });
+              requestAnimationFrame(() => {
+                const after = header.getBoundingClientRect().top;
+                const diff = after - before;
+                if (Math.abs(diff) > 0.5) {
+                  const prevBehavior = document.documentElement.style.scrollBehavior;
+                  document.documentElement.style.scrollBehavior = 'auto';
+                  window.scrollBy(0, diff);
+                  document.documentElement.style.scrollBehavior = prevBehavior || '';
+                }
+              });
             });
           }
 
-          // фокусируем поле
           const row = group.querySelector(`.item-row[data-id="${CSS.escape(id)}"]`);
           if (row) {
             const input = row.querySelector('.qty-input');
@@ -259,18 +266,25 @@
   /* ================== Развернуть/Свернуть все ================== */
   els.btnExpand.addEventListener('click', () => {
     state.expandedAll = !state.expandedAll;
-    els.categories.querySelectorAll('.group').forEach(group => {
-      const header = group.querySelector('.group-header');
-      const items  = group.querySelector('.items');
+    const groups = Array.from(els.categories.querySelectorAll('.group'));
+    const anchors = groups.map(g => g.querySelector('.group-header').getBoundingClientRect().top);
 
-      // фикс позиции для каждого заголовка
-      const beforeTop = header.getBoundingClientRect().top;
+    groups.forEach((group, i) => {
+      const items = group.querySelector('.items');
       group.setAttribute('data-open', String(state.expandedAll));
-      items.hidden = !state.expandedAll;
+      items.classList.toggle('is-collapsed', !state.expandedAll);
+      // компенсируем для каждого заголовка — суммарно эффект «не двигается»
       requestAnimationFrame(() => {
-        const afterTop = header.getBoundingClientRect().top;
-        const diff = afterTop - beforeTop;
-        if (Math.abs(diff) > 1) window.scrollBy({ top: diff, left: 0, behavior: 'auto' });
+        requestAnimationFrame(() => {
+          const now = group.querySelector('.group-header').getBoundingClientRect().top;
+          const diff = now - anchors[i];
+          if (Math.abs(diff) > 0.5) {
+            const prevBehavior = document.documentElement.style.scrollBehavior;
+            document.documentElement.style.scrollBehavior = 'auto';
+            window.scrollBy(0, diff);
+            document.documentElement.style.scrollBehavior = prevBehavior || '';
+          }
+        });
       });
     });
 
@@ -294,7 +308,7 @@
   }
 
   async function loadProducts(){
-    const data = await apiGET('/api/products'); // как в исходнике
+    const data = await apiGET('/api/products');
     const list = Array.isArray(data.products) ? data.products : (Array.isArray(data) ? data : []);
     if (!list.length) throw new Error('EMPTY_PRODUCTS');
     return normalizeProducts(list);
@@ -311,7 +325,6 @@
     }
   })();
 
-  /* =============== важно: не подмешиваем цвета из Telegram ================= */
-  // Никаких переопределений CSS-переменных здесь не делаем.
+  /* Никаких переопределений цветов из Telegram здесь нет */
 
 })();
