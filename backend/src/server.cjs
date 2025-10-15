@@ -13,7 +13,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.SQLITE_PATH || path.join(process.cwd(), "app.sqlite");
 const CATALOG_PATH = process.env.CATALOG_PATH || "/mnt/data/catalog.json";
-const PUB_DIR = path.join(process.cwd(), "backend/public");
+
+// 📍 Ключевая правка:
+// __dirname — реальная папка, где лежит server.cjs (src/)
+// значит public лежит на уровень выше
+const PUB_DIR = path.join(__dirname, "../backend/public");
 
 const bot = new TelegramBot(process.env.BOT_TOKEN || "", { polling: false });
 
@@ -26,6 +30,7 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
   else console.log("SQLite opened at:", DB_PATH);
 });
 
+/* ========= вспомогательные функции ========= */
 function dbAll(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
@@ -46,6 +51,7 @@ function writeJsonAtomic(filePath, dataObj) {
   });
 }
 
+/* ========= auto discovery для каталога ========= */
 async function listTables() {
   const rows = await dbAll(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`);
   return rows.map((r) => r.name);
@@ -140,16 +146,13 @@ async function rebuildCatalogJSON() {
   }
 }
 
-/* ================= Routes ================= */
+/* ========= маршруты ========= */
 
-// Корень: сразу на /admin
+// теперь Express будет искать index, admin и staff в правильной папке
 app.get("/", (req, res) => res.redirect("/admin"));
-
-// Отдаём админку и страницу сотрудника
 app.get("/admin", (req, res) => res.sendFile(path.join(PUB_DIR, "admin.html")));
 app.get("/staff", (req, res) => res.sendFile(path.join(PUB_DIR, "staff.html")));
 
-// Публичный каталог
 app.get("/catalog.json", async (req, res) => {
   try {
     if (!fs.existsSync(CATALOG_PATH)) await rebuildCatalogJSON();
@@ -161,7 +164,6 @@ app.get("/catalog.json", async (req, res) => {
   }
 });
 
-// Ручная пересборка
 app.post("/admin/rebuild-catalog", async (req, res) => {
   try {
     const p = await rebuildCatalogJSON();
@@ -171,7 +173,6 @@ app.post("/admin/rebuild-catalog", async (req, res) => {
   }
 });
 
-// Healthcheck
 app.get("/health", (req, res) => res.json({
   ok: true,
   db: !!db,
@@ -179,6 +180,5 @@ app.get("/health", (req, res) => res.json({
   db_path: DB_PATH
 }));
 
-/* ================= Init ================= */
 rebuildCatalogJSON().catch(err => console.warn("Initial catalog build failed:", err));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
