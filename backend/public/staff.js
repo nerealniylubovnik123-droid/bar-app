@@ -75,7 +75,7 @@
   const state = {
     products: [],          // {id,name,unit,category}
     cart: new Map(),       // productId -> qty
-    expandedAll: true,
+    expandedAll: false,    // по умолчанию список свёрнут, "Развернуть все"
   };
 
   /* ================== Utils ================== */
@@ -101,7 +101,7 @@
     return Array.from(map.entries()).sort((a,b)=>a[0].localeCompare(b[0],'ru',{sensitivity:'base'}));
   }
 
-  /* ================== Render ================== */
+  /* ================== Render (без <details>) ================== */
   function itemRowHtml(p){
     const qty = state.cart.get(p.id) ?? '';
     const unit = p.unit ? `<span class="item-unit">(${escapeHtml(p.unit)})</span>` : '';
@@ -115,19 +115,26 @@
     `;
   }
 
-  function attachItemRowHandlers(){
-    for (const row of els.categories.querySelectorAll('.item-row')){
-      const id = row.getAttribute('data-id');
-      const input = row.querySelector('.qty-input');
-
-      input.addEventListener('input', () => {
-        const v = Math.max(0, safeNum(input.value));
-        if(!v){ state.cart.delete(id); input.value = ''; }
-        else { state.cart.set(id, v); }
-        updateCounter();
-        renderRecommendations();
-      });
-    }
+  function groupHtml(cat, list){
+    const items = list.map(p => itemRowHtml(p)).join('');
+    // items изначально hidden, если expandedAll = false
+    const hiddenAttr = state.expandedAll ? '' : 'hidden';
+    return `
+      <div class="group" data-category="${escapeHtml(cat)}" data-open="${state.expandedAll}">
+        <div class="group-header" data-role="toggle">
+          <div class="group-title">
+            <span class="name">${escapeHtml(cat)}</span>
+          </div>
+          <div class="group-meta">
+            <span class="badge">${list.length}</span>
+            <span class="group-caret">›</span>
+          </div>
+        </div>
+        <div class="items" ${hiddenAttr}>
+          ${items}
+        </div>
+      </div>
+    `;
   }
 
   function render(){
@@ -136,44 +143,55 @@
       els.categories.innerHTML = `<div class="empty">Товары не найдены</div>`;
       updateCounter(); return;
     }
-
-    const html = grouped.map(([cat, list]) => {
-      const items = list.map(p => itemRowHtml(p)).join('');
-      return `
-        <details class="category" ${state.expandedAll ? 'open':''} data-category="${escapeHtml(cat)}">
-          <summary>
-            <span>${escapeHtml(cat)}</span>
-            <span class="meta"><span class="badge">${list.length}</span></span>
-          </summary>
-          <div class="items">${items}</div>
-        </details>
-      `;
-    }).join('');
-
-    els.categories.innerHTML = html;
-    attachItemRowHandlers();
-    attachCategoryStableScroll();
+    els.categories.innerHTML = grouped.map(([cat, list]) => groupHtml(cat, list)).join('');
+    attachHandlers();
     updateCounter();
     renderRecommendations();
+    // Обновим состояние кнопки
+    els.btnExpand.dataset.mode = state.expandedAll ? 'close' : 'open';
+    els.btnExpand.textContent  = state.expandedAll ? 'Свернуть все' : 'Развернуть все';
   }
 
-  /* ==== Стабилизация скролла при сворачивании категорий ==== */
-  function attachCategoryStableScroll(){
-    els.categories.querySelectorAll('details.category > summary').forEach(summary => {
-      summary.addEventListener('click', () => {
-        const before = summary.getBoundingClientRect().top;
-        setTimeout(() => {
-          const after = summary.getBoundingClientRect().top;
-          const diff = after - before;
+  function attachHandlers(){
+    // Тоггл групп с компенсацией скролла (чтобы «не прыгало»)
+    els.categories.querySelectorAll('.group').forEach(groupEl => {
+      const header = groupEl.querySelector('.group-header[data-role="toggle"]');
+      const items  = groupEl.querySelector('.items');
+      header.addEventListener('click', () => {
+        const wasOpen = groupEl.getAttribute('data-open') === 'true';
+        const beforeTop = header.getBoundingClientRect().top;
+
+        // Toggle
+        const nowOpen = !wasOpen;
+        groupEl.setAttribute('data-open', String(nowOpen));
+        items.hidden = !nowOpen;
+
+        // Компенсация сдвига
+        requestAnimationFrame(() => {
+          const afterTop = header.getBoundingClientRect().top;
+          const diff = afterTop - beforeTop;
           if (Math.abs(diff) > 1) {
             window.scrollBy({ top: diff, left: 0, behavior: 'auto' });
           }
-        }, 0);
+        });
+      });
+    });
+
+    // Инпуты количества
+    els.categories.querySelectorAll('.item-row').forEach(row => {
+      const id = row.getAttribute('data-id');
+      const input = row.querySelector('.qty-input');
+      input.addEventListener('input', () => {
+        const v = Math.max(0, safeNum(input.value));
+        if(!v){ state.cart.delete(id); input.value = ''; }
+        else { state.cart.set(id, v); }
+        updateCounter();
+        renderRecommendations();
       });
     });
   }
 
-  /* ================== Рекомендации (без кнопки) ================== */
+  /* ================== Рекомендации (кликаем — раскрываем и фокусируем) ================== */
   function renderRecommendations(){
     const selectedIds = new Set(state.cart.keys());
     const selectedCats = new Set(
@@ -201,38 +219,63 @@
       </div>
     `).join('');
 
-    // Клик по рекомендации: раскрыть категорию, проскроллить и сфокусировать поле количества (без автозаполнения)
     els.recoGrid.querySelectorAll('.reco-item').forEach(el => {
       el.addEventListener('click', () => {
         const id  = el.getAttribute('data-id');
         const cat = el.getAttribute('data-cat');
 
-        // раскрыть категорию
-        const det = els.categories.querySelector(`details.category[data-category="${CSS.escape(cat)}"]`);
-        if (det && !det.open) det.open = true;
+        const group = els.categories.querySelector(`.group[data-category="${CSS.escape(cat)}"]`);
+        if (group) {
+          const header = group.querySelector('.group-header');
+          const items  = group.querySelector('.items');
 
-        // найти строку товара
-        const row = els.categories.querySelector(`.item-row[data-id="${CSS.escape(id)}"]`);
-        if (row) {
-          const input = row.querySelector('.qty-input');
-          input.focus();
-          row.style.outline = `2px solid var(--primary)`;
-          setTimeout(()=>{ row.style.outline = 'none'; }, 600);
+          // раскрываем, если свернуто
+          if (group.getAttribute('data-open') !== 'true') {
+            const beforeTop = header.getBoundingClientRect().top;
+            group.setAttribute('data-open','true');
+            items.hidden = false;
+            requestAnimationFrame(() => {
+              const afterTop = header.getBoundingClientRect().top;
+              const diff = afterTop - beforeTop;
+              if (Math.abs(diff) > 1) window.scrollBy({ top: diff, left: 0, behavior: 'auto' });
+            });
+          }
 
-          const y = row.getBoundingClientRect().top + window.scrollY - 74;
-          window.scrollTo({ top: y, behavior: 'smooth' });
+          // фокусируем поле
+          const row = group.querySelector(`.item-row[data-id="${CSS.escape(id)}"]`);
+          if (row) {
+            const input = row.querySelector('.qty-input');
+            input.focus();
+            row.style.outline = `2px solid var(--primary)`;
+            setTimeout(()=>{ row.style.outline = 'none'; }, 600);
+            const y = row.getBoundingClientRect().top + window.scrollY - 74;
+            window.scrollTo({ top: y, behavior: 'smooth' });
+          }
         }
       });
     });
   }
 
-  /* ================== UI: Развернуть/Свернуть все ================== */
+  /* ================== Развернуть/Свернуть все ================== */
   els.btnExpand.addEventListener('click', () => {
     state.expandedAll = !state.expandedAll;
-    const all = Array.from(els.categories.querySelectorAll('details.category'));
-    for (const d of all) d.open = state.expandedAll;
+    els.categories.querySelectorAll('.group').forEach(group => {
+      const header = group.querySelector('.group-header');
+      const items  = group.querySelector('.items');
+
+      // фикс позиции для каждого заголовка
+      const beforeTop = header.getBoundingClientRect().top;
+      group.setAttribute('data-open', String(state.expandedAll));
+      items.hidden = !state.expandedAll;
+      requestAnimationFrame(() => {
+        const afterTop = header.getBoundingClientRect().top;
+        const diff = afterTop - beforeTop;
+        if (Math.abs(diff) > 1) window.scrollBy({ top: diff, left: 0, behavior: 'auto' });
+      });
+    });
+
     els.btnExpand.dataset.mode = state.expandedAll ? 'close' : 'open';
-    els.btnExpand.textContent   = state.expandedAll ? 'Свернуть все' : 'Развернуть все';
+    els.btnExpand.textContent  = state.expandedAll ? 'Свернуть все' : 'Развернуть все';
   });
 
   function updateCounter(){
@@ -269,6 +312,6 @@
   })();
 
   /* =============== важно: не подмешиваем цвета из Telegram ================= */
-  // Никаких переопределений CSS-переменных цветов здесь не делаем.
+  // Никаких переопределений CSS-переменных здесь не делаем.
 
 })();

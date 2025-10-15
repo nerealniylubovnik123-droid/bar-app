@@ -18,46 +18,55 @@
     }
     .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 
-    /* Категории как аккордеоны */
+    /* Список групп (без <details>, чтобы не было скачков) */
     .categories { display:flex; flex-direction:column; gap:12px; }
-    details.category {
+    .group {
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: 14px;
       box-shadow: var(--shadow);
-      overflow: clip;
-      /* фикс "пляски" при сворачивании */
-      contain: layout paint;
+      color: var(--text);
     }
-    details.category summary {
-      list-style:none; cursor:pointer;
+    .group-header {
       display:flex; align-items:center; justify-content:space-between; gap:12px;
-      padding:12px 14px; font-weight:600; user-select:none;
-      scroll-margin-top: 12px;
+      padding:12px 14px;
+      user-select:none;
+      cursor:pointer;
+      color: var(--text);
     }
-    details.category[open] summary::after { transform: rotate(90deg); }
-    details.category summary::-webkit-details-marker { display:none; }
-    details.category summary .meta { display:flex; align-items:center; gap:8px; color:var(--text-muted); font-weight:500; }
-    details.category summary::after {
-      content:"›"; display:inline-flex; align-items:center; justify-content:center;
+    .group-title {
+      display:flex; align-items:center; gap:8px; font-weight:600;
+      color: var(--text);
+      min-width: 0;
+    }
+    .group-title .name {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .group-meta { display:flex; align-items:center; gap:8px; color: var(--text-muted); font-weight:500; }
+    .group-caret {
       width:1.25rem; height:1.25rem; border-radius:999px; border:1px solid var(--border);
+      display:inline-flex; align-items:center; justify-content:center;
       font-weight:900; line-height:1; transition:transform .18s ease;
-      flex: 0 0 1.25rem;
+      flex: 0 0 1.25rem; color: var(--text);
     }
+    .group[data-open="true"] .group-caret { transform: rotate(90deg); }
 
-    /* Список товаров */
     .items { display:flex; flex-direction:column; gap:6px; padding:8px 10px 12px; }
+    .items[hidden] { display:none; }
+
+    /* Строка товара */
     .item-row{
       display:flex; align-items:center; gap:10px;
       background: var(--bg-elev);
       border:1px solid var(--border);
       border-radius:12px;
       padding:8px 10px;
+      color: var(--text);
     }
     .item-title{
       flex:1 1 auto; min-width:120px;
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-      font-weight:520;
+      font-weight:520; color: var(--text);
     }
     .item-unit{ color:var(--text-muted); font-size:12px; }
 
@@ -66,6 +75,7 @@
     .qty input[type="number"]{ width:100px; text-align:center; padding:8px 8px; border-radius:10px; }
 
     /* Рекомендации */
+    .reco-card { color: var(--text); }
     .reco-card .reco-grid{
       display:grid; gap:8px;
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -76,6 +86,7 @@
       background:color-mix(in oklab, var(--bg-card) 95%, #000 5%);
       cursor: pointer;
       transition: transform .05s ease, background .12s ease;
+      color: var(--text);
     }
     .reco-item:hover{ transform: translateY(-1px); }
     .reco-item .name{ flex:1 1 auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -86,6 +97,7 @@
       background: color-mix(in oklab, var(--bg-card) 92%, transparent);
       border-top:1px solid var(--border);
       backdrop-filter: blur(6px);
+      color: var(--text);
     }
     .submitbar .inner{ display:flex; align-items:center; gap:12px; padding:12px 14px; }
     .submitbar .summary{ display:flex; align-items:center; gap:10px; color:var(--text-muted); }
@@ -102,11 +114,11 @@
   <header class="page-header">
     <div class="container">
       <div class="spaced">
-        <h2>Оформление заявки</h2>
+        <h2 style="color:var(--text)">Оформление заявки</h2>
         <span class="pill">Страница сотрудника</span>
       </div>
       <div class="card spaced toolbar" style="margin-top:8px">
-        <button id="btnExpand" class="btn btn--ghost" type="button" data-mode="close">Свернуть все</button>
+        <button id="btnExpand" class="btn btn--ghost" type="button" data-mode="open">Развернуть все</button>
       </div>
     </div>
   </header>
@@ -119,8 +131,8 @@
 
     <div id="reco" class="card reco-card" style="margin-top:12px; display:none">
       <div class="spaced">
-        <h3 style="margin:0">Рекомендации к заявке</h3>
-        <span class="muted">Популярные позиции из выбранных категорий</span>
+        <h3 style="margin:0; color:var(--text)">Рекомендации к заявке</h3>
+        <!-- Подзаголовок убран по просьбе -->
       </div>
       <div id="recoGrid" class="reco-grid" style="margin-top:10px"></div>
     </div>
