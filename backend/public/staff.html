@@ -5,30 +5,22 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
   <title>Заявка — Сотрудник</title>
   <link rel="stylesheet" href="admin.css" />
+  <!-- Telegram WebApp SDK нужен для initData -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    /* Страница сотрудника — только точечные стили под текущую верстку */
+    /* --- минимальные стили именно под страницу сотрудника --- */
 
-    .page {
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      min-height: 100dvh;
-    }
-
+    .page { display:grid; grid-template-rows:auto 1fr auto; min-height:100dvh; }
     header.page-header {
-      position: sticky;
-      top: 0;
-      z-index: 5;
+      position:sticky; top:0; z-index:5;
       background: color-mix(in oklab, var(--bg-card) 85%, transparent);
       backdrop-filter: blur(6px);
-      border-bottom: 1px solid var(--border);
+      border-bottom:1px solid var(--border);
     }
-
-    .toolbar {
-      display:flex; align-items:center; gap:10px; flex-wrap:wrap;
-    }
+    .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
     .toolbar .grow { flex:1 1 220px }
 
-    /* Аккордеоны категорий */
+    /* Категории как аккордеоны */
     .categories { display:flex; flex-direction:column; gap:12px; }
     details.category {
       background: var(--bg-card);
@@ -39,26 +31,20 @@
     }
     details.category[open] summary::after { transform: rotate(90deg); }
     details.category summary {
-      list-style: none;
-      cursor: pointer;
+      list-style:none; cursor:pointer;
       display:flex; align-items:center; justify-content:space-between; gap:12px;
-      padding: 12px 14px;
-      font-weight: 600;
-      user-select: none;
+      padding:12px 14px; font-weight:600; user-select:none;
     }
     details.category summary::-webkit-details-marker { display:none; }
-    details.category summary .meta { display:flex; align-items:center; gap:8px; color: var(--text-muted); font-weight:500; }
+    details.category summary .meta { display:flex; align-items:center; gap:8px; color:var(--text-muted); font-weight:500; }
     details.category summary::after {
-      content: "›";
-      display:inline-flex; align-items:center; justify-content:center;
-      width: 1.25rem; height: 1.25rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      font-weight:900; line-height:1; transition: transform .18s ease;
+      content:"›"; display:inline-flex; align-items:center; justify-content:center;
+      width:1.25rem; height:1.25rem; border-radius:999px; border:1px solid var(--border);
+      font-weight:900; line-height:1; transition:transform .18s ease;
     }
 
     /* Список товаров */
-    .items { display:flex; flex-direction:column; gap:6px; padding: 8px 10px 12px; }
+    .items { display:flex; flex-direction:column; gap:6px; padding:8px 10px 12px; }
     .item-row{
       display:flex; align-items:center; gap:10px;
       background: var(--bg-elev);
@@ -67,56 +53,32 @@
       padding:8px 10px;
     }
     .item-title{
-      flex:1 1 auto; min-width: 120px;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      font-weight: 520;
+      flex:1 1 auto; min-width:120px;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      font-weight:520;
     }
-    /* Единица измерения (если есть) */
-    .item-unit{
-      color: var(--text-muted);
-      font-size: 12px;
-    }
+    .item-unit{ color:var(--text-muted); font-size:12px; }
 
-    /* Поле количества и кнопки */
-    .qty{
-      display:flex; align-items:center; gap:6px;
-      flex: 0 0 auto;
-    }
-    .qty input[type="number"]{
-      width:84px;
-      text-align:center;
-      padding:8px 6px;
-      border-radius:10px;
-    }
-    .qty .btn{
-      height:34px; width:34px; padding:0; border-radius:10px;
-    }
+    /* Количество — в одной линии с названием */
+    .qty{ display:flex; align-items:center; gap:6px; flex:0 0 auto; }
+    .qty input[type="number"]{ width:84px; text-align:center; padding:8px 6px; border-radius:10px; }
+    .qty .btn{ height:34px; width:34px; padding:0; border-radius:10px; }
 
-    /* Нижняя панель отправки */
+    /* Панель отправки */
     .submitbar{
-      position: sticky;
-      bottom: 0;
-      z-index: 6;
+      position:sticky; bottom:0; z-index:6;
       background: color-mix(in oklab, var(--bg-card) 92%, transparent);
       border-top:1px solid var(--border);
       backdrop-filter: blur(6px);
     }
-    .submitbar .inner{
-      display:flex; align-items:center; gap:12px; padding: 12px 14px;
-    }
-    .submitbar .summary{
-      display:flex; align-items:center; gap:10px; color:var(--text-muted);
-    }
-    .submitbar .summary .dot{
-      width:8px; height:8px; border-radius:999px; background: var(--primary);
-    }
+    .submitbar .inner{ display:flex; align-items:center; gap:12px; padding:12px 14px; }
+    .submitbar .summary{ display:flex; align-items:center; gap:10px; color:var(--text-muted); }
+    .submitbar .summary .dot{ width:8px; height:8px; border-radius:999px; background:var(--primary); }
 
-    /* Плейсхолдеры и пустые состояния */
     .empty{
-      color: var(--text-muted); text-align:center; padding: 14px 10px;
-      border:1px dashed var(--border); border-radius: 12px; background: var(--bg-elev);
+      color:var(--text-muted); text-align:center; padding:14px 10px;
+      border:1px dashed var(--border); border-radius:12px; background: var(--bg-elev);
     }
-
     @media (max-width:720px){
       .qty input[type="number"]{ width:74px; }
       .toolbar .grow { flex:1 1 160px }
@@ -133,14 +95,14 @@
       </div>
       <div class="card spaced toolbar" style="margin-top:8px">
         <input id="search" class="grow" type="search" placeholder="Поиск товара…" autocomplete="off"/>
-        <button id="btnClear" class="btn btn--ghost" type="button">Сбросить</button>
+        <button id="btnClear"  class="btn btn--ghost" type="button">Сбросить</button>
         <button id="btnExpand" class="btn btn--ghost" type="button" data-mode="open">Развернуть все</button>
       </div>
     </div>
   </header>
 
   <main class="container">
-    <!-- Нет больше блока «Поставщик» — убрано намеренно -->
+    <!-- Блок поставщика удалён намеренно -->
     <div id="categories" class="categories">
       <div class="empty">Загружаю список товаров…</div>
     </div>

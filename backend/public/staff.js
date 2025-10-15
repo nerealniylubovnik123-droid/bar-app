@@ -1,13 +1,15 @@
 (() => {
   'use strict';
 
+  /* ======== авторизация из исходника: GET /api/products + initData ======== */
+
   const API_BASE = location.origin;
 
-  /* ================== Telegram initData / Tokens ================== */
   function getInitDataString() {
     const tg = window.Telegram && window.Telegram.WebApp;
     if (tg?.initData) return tg.initData;
 
+    // совместимость со старыми версиями
     if (tg?.initDataUnsafe) {
       try {
         const p = new URLSearchParams();
@@ -28,15 +30,10 @@
     try { return localStorage.getItem('admToken') || ''; } catch { return ''; }
   }
 
-  /* ================== Fetch helper ================== */
   function buildHeaders(extra = {}) {
     const token = getAdminToken();
-    const h = {
-      'Content-Type': 'application/json',
-      ...extra
-    };
-    // Пробуем прокинуть токены, если есть
-    if (TG_INIT) h['X-Telegram-Init-Data'] = TG_INIT;
+    const h = { 'Content-Type': 'application/json', ...extra };
+    if (TG_INIT) h['X-Telegram-Init-Data'] = TG_INIT;     // на случай, если миддлварь читает заголовок
     if (token) {
       h['X-Admin-Token'] = token;
       h['Authorization'] = `Bearer ${token}`;
@@ -44,34 +41,30 @@
     return h;
   }
 
-  async function apiPOST(path, body) {
-    const res = await fetch(API_BASE + path, {
-      method: 'POST',
-      headers: buildHeaders(),
-      body: JSON.stringify({ ...(body || {}), initData: TG_INIT })
-    });
-    let json = null;
-    try { json = await res.json(); } catch {}
-    if (!res.ok || json?.ok === false) {
-      const err = new Error(json?.error || res.statusText || 'Request failed');
-      err.status = res.status;
-      err.payload = json;
-      throw err;
-    }
-    return json;
-  }
-
   async function apiGET(path) {
     const url = new URL(API_BASE + path);
-    if (TG_INIT) url.searchParams.set('initData', encodeURIComponent(TG_INIT));
+    if (TG_INIT) url.searchParams.set('initData', encodeURIComponent(TG_INIT)); // и в query, как в исходнике
     const res = await fetch(url, { method: 'GET', headers: buildHeaders() });
     let json = null;
     try { json = await res.json(); } catch {}
     if (!res.ok || json?.ok === false) {
       const err = new Error(json?.error || res.statusText || 'Request failed');
-      err.status = res.status;
-      err.payload = json;
-      throw err;
+      err.status = res.status; err.payload = json; throw err;
+    }
+    return json;
+  }
+
+  async function apiPOST(path, body) {
+    const res = await fetch(API_BASE + path, {
+      method: 'POST',
+      headers: buildHeaders(),
+      body: JSON.stringify({ ...(body||{}), initData: TG_INIT })
+    });
+    let json = null;
+    try { json = await res.json(); } catch {}
+    if (!res.ok || json?.ok === false) {
+      const err = new Error(json?.error || res.statusText || 'Request failed');
+      err.status = res.status; err.payload = json; throw err;
     }
     return json;
   }
@@ -255,34 +248,9 @@
     el._t = setTimeout(()=> { el.style.opacity = '0'; }, 2200);
   }
 
-  /* ================== Load products with fallbacks ================== */
-  async function loadProducts() {
-    // 1) Пытаемся авторизованный POST /api/products
-    try {
-      const j = await apiPOST('/api/products', {});     // ожидаем { products: [...] } или просто [...]
-      const list = Array.isArray(j) ? j : (Array.isArray(j.products) ? j.products : []);
-      if (!list.length) throw new Error('Empty products list');
-      return list;
-    } catch (e1) {
-      console.warn('POST /api/products failed:', e1?.status || '', e1?.message || e1);
-
-      // 2) Пытаемся публичный GET /api/public/products
-      try {
-        const j = await apiGET('/api/public/products'); // ожидаем { products: [...] } или просто [...]
-        const list = Array.isArray(j) ? j : (Array.isArray(j.products) ? j.products : []);
-        if (!list.length) throw new Error('Empty products list (public)');
-        return list;
-      } catch (e2) {
-        console.warn('GET /api/public/products failed:', e2?.status || '', e2?.message || e2);
-        // 3) Финальный отказ
-        const err = new Error('NO_PRODUCTS_ENDPOINT');
-        err.causes = { e1, e2 };
-        throw err;
-      }
-    }
-  }
-
+  /* ================== Загрузка товаров (как в исходнике) ================== */
   function normalizeProducts(raw) {
+    // мягкая нормализация имён полей, чтобы не падать, если у вас name/title, unit/uom и т.п.
     return raw.map(x => ({
       id: x.id ?? x.product_id ?? x._id,
       name: x.name ?? x.title ?? '',
@@ -291,27 +259,26 @@
     }));
   }
 
+  async function loadProducts(){
+    // оставляю исходную схему: GET /api/products, авторизация — через initData в query+header
+    const data = await apiGET('/api/products');
+    const list = Array.isArray(data.products) ? data.products : (Array.isArray(data) ? data : []);
+    if (!list.length) throw new Error('EMPTY_PRODUCTS');
+    return normalizeProducts(list);
+  }
+
   (async function init(){
     try { window.Telegram?.WebApp?.ready?.(); } catch {}
-
     try {
-      const raw = await loadProducts();
-      state.products = normalizeProducts(raw);
+      state.products = await loadProducts();
       render();
     } catch (e) {
       console.error('Unable to load products:', e);
-      els.categories.innerHTML = `
-        <div class="empty">
-          Ошибка загрузки товаров.<br/>
-          <small class="muted">
-            Попробуйте открыть страницу из Telegram, убедитесь в наличии публичного GET эндпоинта
-            <code>/api/public/products</code>, либо разрешите POST <code>/api/products</code> с initData.
-          </small>
-        </div>`;
+      els.categories.innerHTML = `<div class="empty">Ошибка загрузки товаров.</div>`;
     }
   })();
 
-  /* ================== Тема из Telegram (опционально) ================== */
+  /* ================== Подхват темы из Telegram (необязательно) ================== */
   try {
     const tp = window.Telegram?.WebApp?.themeParams || {};
     const root = document.documentElement;
