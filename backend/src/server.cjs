@@ -1,17 +1,17 @@
-// server.cjs — исправленная версия (Bar App)
+// server.cjs — CommonJS-версия, без ошибок импорта
 
-import express from "express";
-import path from "path";
-import fs from "fs";
-import bodyParser from "body-parser";
-import dotenv from "dotenv";
-import sqlite3 from "sqlite3";
-import { open } from "sqlite";
+const express = require("express");
+const path = require("path");
+const fs = require("fs");
+const bodyParser = require("body-parser");
+const dotenv = require("dotenv");
+const sqlite3 = require("sqlite3");
+const { open } = require("sqlite");
 
 dotenv.config();
 
 const app = express();
-const __dirname = path.dirname(new URL(import.meta.url).pathname);
+const __dirname = __dirname; // в CJS уже доступно
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -66,8 +66,7 @@ function checkAdmin(req, res, next) {
   res.status(401).json({ error: "Unauthorized" });
 }
 
-// === 6. Пример API (проверка авторизации, данные товаров и т.п.) ===
-// Оставляем как было — примерный маршрут:
+// === 6. Пример API (оставь свои реальные роуты) ===
 app.get("/api/products", checkAdmin, async (req, res) => {
   try {
     const rows = await db.all("SELECT * FROM products");
@@ -79,8 +78,6 @@ app.get("/api/products", checkAdmin, async (req, res) => {
 });
 
 // === 7. Роуты страниц ===
-
-// Главная — без редиректа, сразу отдаём admin.html
 app.get("/", (req, res) => {
   const adminPath = path.join(PUB_DIR, "admin.html");
   if (fs.existsSync(adminPath)) return res.sendFile(adminPath);
@@ -89,14 +86,12 @@ app.get("/", (req, res) => {
   res.status(404).send("admin.html не найден");
 });
 
-// /admin — тоже отдаёт admin.html
 app.get("/admin", (req, res) => {
   const adminPath = path.join(PUB_DIR, "admin.html");
   if (fs.existsSync(adminPath)) return res.sendFile(adminPath);
   res.status(404).send("admin.html не найден");
 });
 
-// /staff — страница сотрудников
 app.get("/staff", (req, res) => {
   const staffPath = path.join(PUB_DIR, "staff.html");
   if (fs.existsSync(staffPath)) return res.sendFile(staffPath);
