@@ -7,154 +7,179 @@
   <link rel="stylesheet" href="admin.css" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    /* стабильный скролл и одинаковая ширина скроллбара */
-    html { scrollbar-gutter: stable; }
+    :root {
+      --bg: #f4f4f4;
+      --text: #1a1a1a;
+      --border: #ddd;
+      --primary: #0066ff;
+      --white: #fff;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, sans-serif;
+      margin: 0;
+      padding: 0;
+    }
 
     .page { display:grid; grid-template-rows:auto 1fr auto; min-height:100dvh; }
+
     header.page-header {
-      position:sticky; top:0; z-index:5;
-      background: color-mix(in oklab, var(--bg-card) 85%, transparent);
-      backdrop-filter: blur(6px);
+      position:sticky; top:0; z-index:10;
+      background: var(--white);
       border-bottom:1px solid var(--border);
+      box-shadow:0 2px 4px rgba(0,0,0,0.05);
     }
-    .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    header .container {
+      padding:12px 16px;
+    }
+    h2 { margin:0; font-size:1.25rem; }
 
-    /* Список групп (без <details>) */
-    .categories { display:flex; flex-direction:column; gap:12px; }
-    .group {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      box-shadow: var(--shadow);
-      color: var(--text) !important;
-    }
-    .group * { color: var(--text) !important; } /* жестко фиксируем цвет внутри группы */
+    .toolbar { display:flex; justify-content: flex-end; margin-top:8px; }
+    .btn { border:1px solid var(--border); background: var(--white); padding:6px 12px; border-radius:8px; cursor:pointer; }
+    .btn:hover { background:#f2f2f2; }
 
-    .group-header {
-      display:flex; align-items:center; justify-content:space-between; gap:12px;
-      padding:12px 14px;
-      user-select:none;
-      cursor:pointer;
-    }
-    .group-title {
-      display:flex; align-items:center; gap:8px; font-weight:600;
-      min-width: 0;
-    }
-    .group-title .name {
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .group-meta { display:flex; align-items:center; gap:8px; color: var(--text-muted) !important; font-weight:500; }
-    .group-caret {
-      width:1.25rem; height:1.25rem; border-radius:999px; border:1px solid var(--border);
-      display:inline-flex; align-items:center; justify-content:center;
-      font-weight:900; line-height:1; transition:transform .18s ease;
-      flex: 0 0 1.25rem;
-    }
-    .group[data-open="true"] .group-caret { transform: rotate(90deg); }
+    main.container { padding:16px; }
 
-    /* Контент группы: без display:none, чтобы не было резких перепрыгиваний scroll anchoring */
-    .items {
-      display:block;
-      padding:8px 10px 12px;
-    }
-    .items.is-collapsed { display:none; } /* мы компенсируем скролл в JS */
-
-    /* Строка товара */
-    .item-row{
-      display:flex; align-items:center; gap:10px;
-      background: var(--bg-elev);
+    /* Группы */
+    .category {
+      background: var(--white);
       border:1px solid var(--border);
       border-radius:12px;
-      padding:8px 10px;
+      box-shadow:0 1px 3px rgba(0,0,0,0.08);
+      margin-bottom:12px;
+      overflow:hidden;
+      transition: all .3s ease;
     }
-    .item-title{
-      flex:1 1 auto; min-width:120px;
-      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-      font-weight:520;
-    }
-    .item-unit{ color:var(--text-muted) !important; font-size:12px; }
 
-    /* Количество — в одной линии, без +/- */
-    .qty{ display:flex; align-items:center; gap:6px; flex:0 0 auto; }
-    .qty input[type="number"]{
-      width:100px; text-align:center; padding:8px 8px; border-radius:10px;
-      color: var(--text) !important; background: var(--bg-elev); border:1px solid var(--border);
+    .category-header {
+      padding:12px 16px;
+      font-weight:600;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      cursor:pointer;
+      background:var(--white);
     }
-    .qty input::placeholder{ color: color-mix(in oklab, var(--text) 40%, transparent) !important; }
+    .category-header:hover { background:#f9f9f9; }
+    .category-header span { flex:1; }
+    .category-header .caret {
+      transition: transform .2s ease;
+    }
+    .category.open .category-header .caret { transform: rotate(90deg); }
+
+    .category-items {
+      overflow:hidden;
+      max-height:0;
+      transition:max-height .35s ease;
+    }
+    .category.open .category-items {
+      max-height:2000px; /* достаточно, чтобы вместить все товары */
+    }
+
+    /* Товары */
+    .item {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      background: var(--white);
+      border-top:1px solid var(--border);
+      padding:10px 16px;
+      transition: background .15s;
+    }
+    .item:first-child { border-top:none; }
+    .item:hover { background:#fafafa; }
+
+    .item-name { font-weight:500; flex:1; margin-right:10px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .item-unit { font-size:12px; color:#666; margin-left:4px; }
+
+    .qty-input {
+      width:80px;
+      text-align:center;
+      border:1px solid var(--border);
+      border-radius:6px;
+      padding:6px;
+      background:var(--white);
+      color:var(--text);
+    }
 
     /* Рекомендации */
-    .reco-card { color: var(--text) !important; }
-    .reco-card .reco-grid{
-      display:grid; gap:8px;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    .reco {
+      margin-top:20px;
+      background: var(--white);
+      border:1px solid var(--border);
+      border-radius:12px;
+      box-shadow:0 1px 3px rgba(0,0,0,0.08);
+      padding:16px;
     }
-    .reco-item{
-      display:flex; align-items:center; gap:8px;
-      border:1px dashed var(--border); border-radius:12px; padding:8px 10px;
-      background:color-mix(in oklab, var(--bg-card) 95%, #000 5%);
-      cursor: pointer;
-      transition: transform .05s ease, background .12s ease;
+    .reco h3 { margin:0 0 10px; }
+    .reco-list {
+      display:grid;
+      grid-template-columns:repeat(auto-fill, minmax(200px,1fr));
+      gap:8px;
     }
-    .reco-item:hover{ transform: translateY(-1px); }
-    .reco-item .name{ flex:1 1 auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .reco-item {
+      padding:8px 10px;
+      border:1px dashed var(--border);
+      border-radius:8px;
+      cursor:pointer;
+      background:#fafafa;
+      text-align:center;
+    }
+    .reco-item:hover { background:#f0f0f0; }
 
-    /* Панель отправки */
-    .submitbar{
-      position:sticky; bottom:0; z-index:6;
-      background: color-mix(in oklab, var(--bg-card) 92%, transparent);
+    /* Нижняя панель */
+    footer {
+      position:sticky; bottom:0;
+      background:var(--white);
       border-top:1px solid var(--border);
-      backdrop-filter: blur(6px);
-      color: var(--text) !important;
+      box-shadow:0 -2px 4px rgba(0,0,0,0.05);
     }
-    .submitbar .inner{ display:flex; align-items:center; gap:12px; padding:12px 14px; }
-    .submitbar .summary{ display:flex; align-items:center; gap:10px; color:var(--text-muted) !important; }
-    .submitbar .summary .dot{ width:8px; height:8px; border-radius:999px; background:var(--primary); }
+    footer .inner {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:12px 16px;
+    }
+    footer .btn-primary {
+      background: var(--primary);
+      color:#fff;
+      border:none;
+      border-radius:8px;
+      padding:8px 16px;
+      cursor:pointer;
+    }
+    footer .btn-primary:hover { opacity:0.9; }
 
-    .empty{
-      color:var(--text-muted) !important; text-align:center; padding:14px 10px;
-      border:1px dashed var(--border); border-radius:12px; background: var(--bg-elev);
-    }
   </style>
 </head>
 <body>
 <div class="page">
   <header class="page-header">
     <div class="container">
-      <div class="spaced">
-        <h2 style="color:var(--text) !important;">Оформление заявки</h2>
-        <span class="pill">Страница сотрудника</span>
-      </div>
-      <div class="card spaced toolbar" style="margin-top:8px">
-        <button id="btnExpand" class="btn btn--ghost" type="button" data-mode="open">Развернуть все</button>
+      <h2>Оформление заявки</h2>
+      <div class="toolbar">
+        <button id="toggleAll" class="btn">Развернуть все</button>
       </div>
     </div>
   </header>
 
   <main class="container">
-    <div id="categories" class="categories">
-      <div class="empty">Загружаю список товаров…</div>
-    </div>
+    <div id="categories"></div>
 
-    <div id="reco" class="card reco-card" style="margin-top:12px; display:none">
-      <div class="spaced">
-        <h3 style="margin:0; color:var(--text) !important;">Рекомендации к заявке</h3>
-      </div>
-      <div id="recoGrid" class="reco-grid" style="margin-top:10px"></div>
+    <div id="reco" class="reco" style="display:none">
+      <h3>Рекомендации</h3>
+      <div id="recoList" class="reco-list"></div>
     </div>
   </main>
 
-  <footer class="submitbar">
-    <div class="container inner">
-      <div class="summary">
-        <span class="dot"></span>
-        <span id="selectedCounter">Выбрано: 0 позиций</span>
-      </div>
-      <div style="flex:1 1 auto"></div>
-      <button id="btnSend" class="btn btn--primary" type="button">Отправить заявку</button>
+  <footer>
+    <div class="inner">
+      <div id="count">Выбрано: 0 позиций</div>
+      <button id="sendBtn" class="btn-primary">Отправить заявку</button>
     </div>
   </footer>
 </div>
-
-<script src="staff.js" defer></script>
+<script src="staff.js"></script>
 </body>
 </html>

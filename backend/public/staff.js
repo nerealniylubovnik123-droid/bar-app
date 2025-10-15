@@ -1,330 +1,135 @@
-(() => {
-  'use strict';
+(async () => {
+  const API = '/api/products';
+  const categoriesEl = document.getElementById('categories');
+  const recoEl = document.getElementById('reco');
+  const recoList = document.getElementById('recoList');
+  const toggleAllBtn = document.getElementById('toggleAll');
+  const countEl = document.getElementById('count');
 
-  const API_BASE = location.origin;
+  let products = [];
+  let expandedAll = false;
+  const cart = new Map();
 
-  /* ======== initData (как в исходнике) ======== */
-  function getInitDataString() {
-    const tg = window.Telegram && window.Telegram.WebApp;
-    if (tg?.initData) return tg.initData;
-    if (tg?.initDataUnsafe) {
-      try {
-        const p = new URLSearchParams();
-        const u = tg.initDataUnsafe;
-        if (u.query_id)     p.set('query_id', u.query_id);
-        if (u.user)         p.set('user', JSON.stringify(u.user));
-        if (u.start_param)  p.set('start_param', u.start_param);
-        if (u.auth_date)    p.set('auth_date', String(u.auth_date));
-        if (u.hash)         p.set('hash', u.hash);
-        return p.toString();
-      } catch {}
-    }
-    return '';
-  }
-  const TG_INIT = getInitDataString();
-
-  function getAdminToken() {
-    try { return localStorage.getItem('admToken') || ''; } catch { return ''; }
-  }
-  function buildHeaders(extra = {}) {
-    const token = getAdminToken();
-    const h = { 'Content-Type': 'application/json', ...extra };
-    if (TG_INIT) h['X-Telegram-Init-Data'] = TG_INIT;
-    if (token) {
-      h['X-Admin-Token'] = token;
-      h['Authorization'] = `Bearer ${token}`;
-    }
-    return h;
-  }
-  async function apiGET(path) {
-    const url = new URL(API_BASE + path);
-    if (TG_INIT) url.searchParams.set('initData', encodeURIComponent(TG_INIT));
-    const res = await fetch(url, { method: 'GET', headers: buildHeaders() });
-    let json = null; try { json = await res.json(); } catch {}
-    if (!res.ok || json?.ok === false) {
-      const err = new Error(json?.error || res.statusText || 'Request failed');
-      err.status = res.status; err.payload = json; throw err;
-    }
-    return json;
-  }
-  async function apiPOST(path, body) {
-    const res = await fetch(API_BASE + path, {
-      method: 'POST',
-      headers: buildHeaders(),
-      body: JSON.stringify({ ...(body||{}), initData: TG_INIT })
-    });
-    let json = null; try { json = await res.json(); } catch {}
-    if (!res.ok || json?.ok === false) {
-      const err = new Error(json?.error || res.statusText || 'Request failed');
-      err.status = res.status; err.payload = json; throw err;
-    }
-    return json;
-  }
-
-  /* ================== DOM ================== */
-  const els = {
-    categories: document.getElementById('categories'),
-    btnExpand:  document.getElementById('btnExpand'),
-    btnSend:    document.getElementById('btnSend'),
-    counter:    document.getElementById('selectedCounter'),
-    recoCard:   document.getElementById('reco'),
-    recoGrid:   document.getElementById('recoGrid'),
+  // --- utils ---
+  const escapeHtml = s => (s ?? '').toString().replace(/[&<>"']/g, m => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]
+  ));
+  const plural = (n,a,b,c)=>{
+    n=Math.abs(n)%100;const n1=n%10;
+    if(n>10&&n<20)return c;if(n1>1&&n1<5)return b;if(n1===1)return a;return c;
   };
 
-  /* ================== State ================== */
-  const state = {
-    products: [],          // {id,name,unit,category}
-    cart: new Map(),       // productId -> qty
-    expandedAll: false,    // старт: свёрнуто
-  };
-
-  /* ================== Utils ================== */
-  const by = (k) => (a,b) => (a[k]||'').localeCompare(b[k]||'', 'ru', {sensitivity:'base'});
-  function safeNum(v, def=0){ const n = Number(v); return Number.isFinite(n) ? n : def; }
-  function plural(n, one, few, many){
-    n = Math.abs(n) % 100; const n1 = n % 10;
-    if (n>10 && n<20) return many; if (n1>1 && n1<5) return few; if (n1===1) return one; return many;
-  }
-  function escapeHtml(s){
-    return (s ?? '').toString()
-      .replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
-      .replaceAll('"','&quot;').replaceAll("'",'&#39;');
-  }
-  function groupByCategory(items){
-    const map = new Map();
-    for (const p of items){
+  function renderCategories() {
+    const grouped = {};
+    for (const p of products) {
       const cat = p.category || 'Без категории';
-      if(!map.has(cat)) map.set(cat, []);
-      map.get(cat).push(p);
+      (grouped[cat] ||= []).push(p);
     }
-    for(const arr of map.values()) arr.sort(by('name'));
-    return Array.from(map.entries()).sort((a,b)=>a[0].localeCompare(b[0],'ru',{sensitivity:'base'}));
-  }
 
-  /* ================== Render ================== */
-  function itemRowHtml(p){
-    const qty = state.cart.get(p.id) ?? '';
-    const unit = p.unit ? `<span class="item-unit">(${escapeHtml(p.unit)})</span>` : '';
-    return `
-      <div class="item-row" data-id="${String(p.id)}">
-        <div class="item-title">${escapeHtml(p.name)} ${unit}</div>
-        <div class="qty">
-          <input type="number" class="qty-input" inputmode="decimal" min="0" step="0.5" placeholder="0" value="${qty}"/>
+    categoriesEl.innerHTML = Object.entries(grouped).map(([cat, list])=>{
+      const items = list.map(p=>`
+        <div class="item" data-id="${p.id}">
+          <div class="item-name">${escapeHtml(p.name)} <span class="item-unit">${p.unit||''}</span></div>
+          <input type="number" min="0" step="0.5" placeholder="0" class="qty-input" />
         </div>
-      </div>
-    `;
-  }
+      `).join('');
 
-  function groupHtml(cat, list){
-    const items = list.map(p => itemRowHtml(p)).join('');
-    const collapsedClass = state.expandedAll ? '' : 'is-collapsed';
-    return `
-      <div class="group" data-category="${escapeHtml(cat)}" data-open="${state.expandedAll}">
-        <div class="group-header" data-role="toggle">
-          <div class="group-title"><span class="name">${escapeHtml(cat)}</span></div>
-          <div class="group-meta">
-            <span class="badge">${list.length}</span>
-            <span class="group-caret">›</span>
+      return `
+        <div class="category" data-cat="${escapeHtml(cat)}">
+          <div class="category-header">
+            <span>${escapeHtml(cat)}</span>
+            <div class="caret">›</div>
           </div>
+          <div class="category-items">${items}</div>
         </div>
-        <div class="items ${collapsedClass}">
-          ${items}
-        </div>
-      </div>
-    `;
-  }
+      `;
+    }).join('');
 
-  function render(){
-    const grouped = groupByCategory(state.products);
-    if(!grouped.length){
-      els.categories.innerHTML = `<div class="empty">Товары не найдены</div>`;
-    } else {
-      els.categories.innerHTML = grouped.map(([cat, list]) => groupHtml(cat, list)).join('');
-    }
     attachHandlers();
-    updateCounter();
-    renderRecommendations();
-    els.btnExpand.dataset.mode = state.expandedAll ? 'close' : 'open';
-    els.btnExpand.textContent  = state.expandedAll ? 'Свернуть все' : 'Развернуть все';
   }
 
-  function attachHandlers(){
-    // Переключение группы с ЖЁСТКОЙ компенсацией скролла по заголовку
-    els.categories.querySelectorAll('.group').forEach(groupEl => {
-      const header = groupEl.querySelector('.group-header[data-role="toggle"]');
-      const items  = groupEl.querySelector('.items');
-      header.addEventListener('click', () => {
-        const wasOpen = groupEl.getAttribute('data-open') === 'true';
-
-        // Сохраняем положение заголовка в viewport
-        const before = header.getBoundingClientRect().top;
-
-        // Мгновенно переключаем
-        groupEl.setAttribute('data-open', String(!wasOpen));
-        items.classList.toggle('is-collapsed', wasOpen);
-
-        // Жёсткая компенсация — два кадра для полной перерасчётки
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            const after = header.getBoundingClientRect().top;
-            const diff = after - before;
-            if (Math.abs(diff) > 0.5) {
-              const prevBehavior = document.documentElement.style.scrollBehavior;
-              document.documentElement.style.scrollBehavior = 'auto';
-              window.scrollBy(0, diff);
-              document.documentElement.style.scrollBehavior = prevBehavior || '';
-            }
-          });
-        });
+  function attachHandlers() {
+    // раскрытие групп
+    categoriesEl.querySelectorAll('.category-header').forEach(h=>{
+      h.addEventListener('click',()=>{
+        const cat=h.parentElement;
+        const open=cat.classList.toggle('open');
+        h.querySelector('.caret').style.transform=open?'rotate(90deg)':'none';
       });
     });
 
-    // Инпуты количества
-    els.categories.querySelectorAll('.item-row').forEach(row => {
-      const id = row.getAttribute('data-id');
-      const input = row.querySelector('.qty-input');
-      input.addEventListener('input', () => {
-        const v = Math.max(0, Number(input.value));
-        if(!v){ state.cart.delete(id); input.value = ''; }
-        else { state.cart.set(id, v); }
-        updateCounter();
+    // ввод количества
+    categoriesEl.querySelectorAll('.qty-input').forEach(inp=>{
+      inp.addEventListener('input',()=>{
+        const row=inp.closest('.item');
+        const id=row.dataset.id;
+        const val=parseFloat(inp.value)||0;
+        if(val>0) cart.set(id,val); else cart.delete(id);
+        updateCount();
         renderRecommendations();
       });
     });
   }
 
-  /* ================== Рекомендации (клик — раскрыть и сфокусировать) ================== */
+  function updateCount(){
+    const n=cart.size;
+    countEl.textContent=`Выбрано: ${n} ${plural(n,'позиция','позиции','позиций')}`;
+  }
+
   function renderRecommendations(){
-    const selectedIds = new Set(state.cart.keys());
-    const selectedCats = new Set(
-      state.products.filter(p => selectedIds.has(String(p.id)) || selectedIds.has(p.id))
-                    .map(p => p.category || 'Без категории')
+    const selectedIds=new Set(cart.keys());
+    const selectedCats=new Set(
+      products.filter(p=>selectedIds.has(String(p.id))).map(p=>p.category||'Без категории')
     );
+    const candidates=products.filter(p=>
+      selectedCats.has(p.category||'Без категории')&&!selectedIds.has(String(p.id))
+    ).slice(0,6);
 
-    const candidates = state.products.filter(p =>
-      selectedCats.has(p.category || 'Без категории') &&
-      !selectedIds.has(String(p.id)) && !selectedIds.has(p.id)
-    );
-
-    const recos = candidates.sort(by('name')).slice(0, 6);
-
-    if (!recos.length) {
-      els.recoCard.style.display = 'none';
-      els.recoGrid.innerHTML = '';
-      return;
-    }
-
-    els.recoCard.style.display = '';
-    els.recoGrid.innerHTML = recos.map(p => `
-      <div class="reco-item" data-id="${String(p.id)}" data-cat="${escapeHtml(p.category || 'Без категории')}">
-        <div class="name">${escapeHtml(p.name)}</div>
-      </div>
+    if(!candidates.length){recoEl.style.display='none';return;}
+    recoEl.style.display='block';
+    recoList.innerHTML=candidates.map(p=>`
+      <div class="reco-item" data-id="${p.id}" data-cat="${escapeHtml(p.category||'Без категории')}">${escapeHtml(p.name)}</div>
     `).join('');
 
-    els.recoGrid.querySelectorAll('.reco-item').forEach(el => {
-      el.addEventListener('click', () => {
-        const id  = el.getAttribute('data-id');
-        const cat = el.getAttribute('data-cat');
-
-        const group = els.categories.querySelector(`.group[data-category="${CSS.escape(cat)}"]`);
-        if (group) {
-          const header = group.querySelector('.group-header');
-          const items  = group.querySelector('.items');
-
-          if (group.getAttribute('data-open') !== 'true') {
-            const before = header.getBoundingClientRect().top;
-            group.setAttribute('data-open','true');
-            items.classList.remove('is-collapsed');
-            requestAnimationFrame(() => {
-              requestAnimationFrame(() => {
-                const after = header.getBoundingClientRect().top;
-                const diff = after - before;
-                if (Math.abs(diff) > 0.5) {
-                  const prevBehavior = document.documentElement.style.scrollBehavior;
-                  document.documentElement.style.scrollBehavior = 'auto';
-                  window.scrollBy(0, diff);
-                  document.documentElement.style.scrollBehavior = prevBehavior || '';
-                }
-              });
-            });
-          }
-
-          const row = group.querySelector(`.item-row[data-id="${CSS.escape(id)}"]`);
-          if (row) {
-            const input = row.querySelector('.qty-input');
-            input.focus();
-            row.style.outline = `2px solid var(--primary)`;
-            setTimeout(()=>{ row.style.outline = 'none'; }, 600);
-            const y = row.getBoundingClientRect().top + window.scrollY - 74;
-            window.scrollTo({ top: y, behavior: 'smooth' });
-          }
+    recoList.querySelectorAll('.reco-item').forEach(el=>{
+      el.addEventListener('click',()=>{
+        const cat=el.dataset.cat;
+        const id=el.dataset.id;
+        const block=document.querySelector(`.category[data-cat="${CSS.escape(cat)}"]`);
+        if(block&&!block.classList.contains('open')){
+          block.classList.add('open');
+          block.querySelector('.caret').style.transform='rotate(90deg)';
+        }
+        const item=block?.querySelector(`.item[data-id="${CSS.escape(id)}"]`);
+        if(item){
+          item.scrollIntoView({behavior:'smooth',block:'center'});
+          const input=item.querySelector('.qty-input');
+          input.focus();
         }
       });
     });
   }
 
-  /* ================== Развернуть/Свернуть все ================== */
-  els.btnExpand.addEventListener('click', () => {
-    state.expandedAll = !state.expandedAll;
-    const groups = Array.from(els.categories.querySelectorAll('.group'));
-    const anchors = groups.map(g => g.querySelector('.group-header').getBoundingClientRect().top);
-
-    groups.forEach((group, i) => {
-      const items = group.querySelector('.items');
-      group.setAttribute('data-open', String(state.expandedAll));
-      items.classList.toggle('is-collapsed', !state.expandedAll);
-      // компенсируем для каждого заголовка — суммарно эффект «не двигается»
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const now = group.querySelector('.group-header').getBoundingClientRect().top;
-          const diff = now - anchors[i];
-          if (Math.abs(diff) > 0.5) {
-            const prevBehavior = document.documentElement.style.scrollBehavior;
-            document.documentElement.style.scrollBehavior = 'auto';
-            window.scrollBy(0, diff);
-            document.documentElement.style.scrollBehavior = prevBehavior || '';
-          }
-        });
-      });
+  toggleAllBtn.addEventListener('click',()=>{
+    expandedAll=!expandedAll;
+    document.querySelectorAll('.category').forEach(c=>{
+      c.classList.toggle('open',expandedAll);
+      c.querySelector('.caret').style.transform=expandedAll?'rotate(90deg)':'none';
     });
-
-    els.btnExpand.dataset.mode = state.expandedAll ? 'close' : 'open';
-    els.btnExpand.textContent  = state.expandedAll ? 'Свернуть все' : 'Развернуть все';
+    toggleAllBtn.textContent=expandedAll?'Свернуть все':'Развернуть все';
   });
 
-  function updateCounter(){
-    const cnt = state.cart.size;
-    els.counter.textContent = `Выбрано: ${cnt} ${plural(cnt, 'позиция','позиции','позиций')}`;
-  }
-
-  /* ================== Загрузка товаров ================== */
-  function normalizeProducts(raw) {
-    return raw.map(x => ({
-      id: x.id ?? x.product_id ?? x._id,
-      name: x.name ?? x.title ?? '',
-      unit: x.unit ?? x.uom ?? x.measure ?? '',
-      category: x.category ?? x.group ?? 'Без категории'
-    }));
-  }
-
+  // --- load products ---
   async function loadProducts(){
-    const data = await apiGET('/api/products');
-    const list = Array.isArray(data.products) ? data.products : (Array.isArray(data) ? data : []);
-    if (!list.length) throw new Error('EMPTY_PRODUCTS');
-    return normalizeProducts(list);
+    try{
+      const res=await fetch(API);
+      const data=await res.json();
+      products=(Array.isArray(data.products)?data.products:data)||[];
+      renderCategories();
+    }catch(e){
+      categoriesEl.innerHTML='<p>Ошибка загрузки товаров</p>';
+    }
   }
 
-  (async function init(){
-    try { window.Telegram?.WebApp?.ready?.(); } catch {}
-    try {
-      state.products = await loadProducts();
-      render();
-    } catch (e) {
-      console.error('Unable to load products:', e);
-      els.categories.innerHTML = `<div class="empty">Ошибка загрузки товаров.</div>`;
-    }
-  })();
-
-  /* Никаких переопределений цветов из Telegram здесь нет */
-
+  await loadProducts();
 })();
