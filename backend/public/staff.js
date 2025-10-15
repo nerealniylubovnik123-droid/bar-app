@@ -1,259 +1,196 @@
-(() => {
-  'use strict';
-  const API_BASE = location.origin;
+// staff.js v20251015-5 — категории сворачиваются, поставщик скрыт
+console.log('staff.js v20251015-5 loaded');
 
-  /* ---------- initData ---------- */
-  function getInitData() {
-    const tg = window.Telegram && window.Telegram.WebApp;
-    if (tg?.initData) return tg.initData;
-    if (tg?.initDataUnsafe) {
-      try {
-        const p = new URLSearchParams();
-        const u = tg.initDataUnsafe;
-        if (u.query_id) p.set('query_id', u.query_id);
-        if (u.user) p.set('user', JSON.stringify(u.user));
-        if (u.start_param) p.set('start_param', u.start_param);
-        if (u.auth_date) p.set('auth_date', String(u.auth_date));
-        if (u.hash) p.set('hash', u.hash);
-        if (p.get('hash')) return p.toString();
-      } catch {}
-    }
-    if (location.hash.includes('tgWebAppData=')) {
-      try {
-        const h = new URLSearchParams(location.hash.slice(1));
-        const raw = h.get('tgWebAppData');
-        if (raw) return decodeURIComponent(raw);
-      } catch {}
-    }
-    return '';
+(function() {
+  const tg = window.Telegram?.WebApp;
+  tg?.expand();
+
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const meBox = $('#meBox');
+  const errBox = $('#err');
+  const okBox = $('#ok');
+  const suppliersContainer = $('#suppliersContainer');
+  const submitBtn = $('#submitBtn');
+  const clearBtn = $('#clearBtn');
+  const itemsCountEl = $('#itemsCount');
+
+  let products = [];
+  let qtyMap = new Map();
+
+  const initData = (() => {
+    try {
+      const u = new URL(window.location.href);
+      const fromQuery = u.searchParams.get('initData');
+      if (fromQuery) return fromQuery;
+      if (tg?.initData) return tg.initData;
+      return localStorage.getItem('tg_initData') || '';
+    } catch { return ''; }
+  })();
+  if (initData) localStorage.setItem('tg_initData', initData);
+
+  const apiGet = async (url) => {
+    const sep = url.includes('?') ? '&' : '?';
+    const r = await fetch(`${url}${sep}initData=${encodeURIComponent(initData)}`);
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  };
+
+  const apiPost = async (url, body) => {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({initData, ...body})
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  };
+
+  const showErr = (m)=>{errBox.textContent=m;errBox.style.display='block';okBox.style.display='none';};
+  const showOk  = (m)=>{okBox.textContent=m;okBox.style.display='block';errBox.style.display='none';};
+  const clearMsgs=()=>{errBox.style.display='none';okBox.style.display='none';};
+  const escapeHtml=(s)=>String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+  function updateSummary(){
+    const c=[...qtyMap.values()].filter(v=>v>0).length;
+    itemsCountEl.textContent=String(c);
   }
-  const TG_INIT = getInitData();
 
-  /* ---------- API ---------- */
-  async function api(path, { method='GET', body } = {}) {
-    const url = new URL(API_BASE + path);
-    const m = method.toUpperCase();
-    if (m === 'POST') {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...(body||{}), initData: TG_INIT })
+  function round2(x){return Math.round(x*100)/100;}
+
+  function render(){
+    suppliersContainer.innerHTML='';
+    const bySupplier=new Map();
+    for(const p of products){
+      const k=String(p.supplier_id??'0');
+      if(!bySupplier.has(k))bySupplier.set(k,[]);
+      bySupplier.get(k).push(p);
+    }
+
+    let i=0;
+    for(const [,list] of bySupplier.entries()){
+      i++;
+      const details=document.createElement('details');
+      details.className='supplier-section';
+      details.open=true;
+
+      const summary=document.createElement('summary');
+      const head=document.createElement('div');
+      head.className='supplier-head';
+      head.innerHTML=`
+        <h2 class="supplier-title">
+          <span class="caret"></span>Категория ${i}
+          <span class="muted">• ${list.length} поз.</span>
+        </h2>
+        <button class="btn" data-clear>Сбросить</button>
+      `;
+      summary.appendChild(head);
+      details.appendChild(summary);
+
+      const grid=document.createElement('div');
+      grid.className='products';
+
+      for(const p of list){
+        const card=document.createElement('div');
+        card.className='product';
+        card.dataset.id=p.id;
+
+        const name=document.createElement('div');
+        name.className='product-name';
+        name.textContent=p.name;
+
+        const meta=document.createElement('div');
+        meta.className='product-meta';
+        meta.innerHTML=`
+          <span class="muted">ID ${p.id}</span>
+          ${p.unit?`<span>ед.: ${escapeHtml(p.unit)}</span>`:''}
+        `;
+
+        const qtyRow=document.createElement('div');
+        qtyRow.className='qty-row';
+        const input=document.createElement('input');
+        input.type='number';
+        input.min='0';input.step='0.01';
+        input.className='qty-input';
+        input.value=qtyMap.get(p.id)||'';
+
+        const plus=document.createElement('button');
+        plus.className='btn square';plus.textContent='+';
+        const minus=document.createElement('button');
+        minus.className='btn square';minus.textContent='−';
+        const controls=document.createElement('div');
+        controls.className='qty-controls';
+        controls.append(minus,plus);
+
+        qtyRow.append(input,controls);
+        card.append(name,meta,qtyRow);
+        grid.append(card);
+
+        input.addEventListener('input',()=>{
+          const v=parseFloat(input.value);
+          if(!v||v<=0)qtyMap.delete(p.id);
+          else qtyMap.set(p.id,round2(v));
+          updateSummary();
+        });
+        plus.addEventListener('click',()=>{
+          const cur=qtyMap.get(p.id)||0;
+          const next=round2(cur+1);
+          qtyMap.set(p.id,next);
+          input.value=next;
+          updateSummary();
+        });
+        minus.addEventListener('click',()=>{
+          const cur=qtyMap.get(p.id)||0;
+          const next=Math.max(0,round2(cur-1));
+          if(next<=0)qtyMap.delete(p.id);else qtyMap.set(p.id,next);
+          input.value=next||'';
+          updateSummary();
+        });
+      }
+
+      details.appendChild(grid);
+      suppliersContainer.appendChild(details);
+
+      head.querySelector('[data-clear]').addEventListener('click',(e)=>{
+        e.preventDefault();e.stopPropagation();
+        for(const p of list)qtyMap.delete(p.id);
+        render();
+        updateSummary();
       });
-      const j = await res.json().catch(()=>({}));
-      if (!res.ok || j?.ok === false) throw new Error(j?.error || res.statusText);
-      return j;
     }
-    if (TG_INIT) url.searchParams.set('initData', encodeURIComponent(TG_INIT));
-    const res = await fetch(url, { method: m, headers: { 'Content-Type': 'application/json' } });
-    const j = await res.json().catch(()=>({}));
-    if (!res.ok || j?.ok === false) throw new Error(j?.error || res.statusText);
-    return j;
+    updateSummary();
   }
 
-  /* ---------- helpers / state ---------- */
-  const $ = s => document.querySelector(s);
-  function el(t, a={}, ...c){
-    const e = document.createElement(t);
-    for (const [k,v] of Object.entries(a)){
-      if (k === 'className') e.className = v;
-      else if (k === 'html') e.innerHTML = v;
-      else e.setAttribute(k, v);
+  clearBtn.addEventListener('click',()=>{qtyMap.clear();render();updateSummary();});
+
+  submitBtn.addEventListener('click',async()=>{
+    clearMsgs();
+    const items=[...qtyMap.entries()].filter(([,v])=>v>0)
+      .map(([product_id,qty])=>({product_id,qty}));
+    if(!items.length){showErr('Вы не указали количество.');return;}
+    submitBtn.disabled=true;submitBtn.textContent='Отправка...';
+    try{
+      const r=await apiPost('/api/requisitions',{items});
+      showOk(`Заявка №${r.requisition_id} оформлена.`);
+      qtyMap.clear();render();
+      tg?.HapticFeedback?.notificationOccurred('success');
+    }catch(e){
+      showErr(e.message||'Ошибка отправки');
+      tg?.HapticFeedback?.notificationOccurred('error');
+    }finally{
+      submitBtn.disabled=false;submitBtn.textContent='Отправить заявку';
     }
-    for (const x of c) e.appendChild(typeof x === 'string' ? document.createTextNode(x) : x);
-    return e;
-  }
+  });
 
-  const formBox = $('#form');
-  const resultBox = $('#result');
-  const recoBox = $('#reco');
+  (async function init(){
+    try{
+      const me=await apiGet('/api/me');
+      meBox.textContent=me?.name||'Сотрудник';
+    }catch{meBox.textContent='Сотрудник';}
 
-  let PRODUCTS = [];                         // [{id,name,unit,category,supplier_id,supplier_name}]
-  const inputByPid = new Map();              // основная форма: product_id -> <input>
-  const recoInputByPid = new Map();          // рекомендации: product_id -> <input> (есть в «рекомендациях»)
-
-  function readSelectedIds() {
-    const out = [];
-    for (const [pid, input] of inputByPid.entries()) {
-      const q = Number(input.value);
-      if (q > 0) out.push(Number(pid));
-    }
-    return out;
-  }
-
-  function groupBy(arr, keyFn) {
-    const map = new Map();
-    for (const item of arr) {
-      const k = keyFn(item);
-      if (!map.has(k)) map.set(k, []);
-      map.get(k).push(item);
-    }
-    return map;
-  }
-
-  /* ---------- РЕКОМЕНДАЦИИ (как раньше, синхронизация сохранена) ---------- */
-  function renderRecommendations() {
-    recoBox.innerHTML = '';
-    recoInputByPid.clear();
-
-    const selectedIds = new Set(readSelectedIds());
-    if (selectedIds.size === 0) {
-      recoBox.appendChild(el('div', { className:'card' }, 'Сначала добавьте в заявку хотя бы один товар — рекомендации покажут позиции от тех же поставщиков.'));
-      return;
-    }
-
-    const supplierIdsInUse = new Set(
-      PRODUCTS.filter(p => selectedIds.has(p.id)).map(p => p.supplier_id)
-    );
-
-    const recommended = PRODUCTS
-      .filter(p => supplierIdsInUse.has(p.supplier_id) && !selectedIds.has(p.id))
-      .sort((a,b)=>a.name.localeCompare(b.name,'ru'));
-
-    if (!recommended.length) {
-      recoBox.appendChild(el('div', { className:'card' }, 'Подходящих рекомендаций нет — все товары этих поставщиков уже выбраны.'));
-      return;
-    }
-
-    const toolbar = el('div', { className:'spaced', style:'margin-bottom:8px' },
-      el('div', { className:'muted' }, 'Введите количество прямо здесь — оно сразу появится в основной форме.'),
-      (() => {
-        const btn = el('button', { className:'btn', type:'button' }, 'Добавить все (≠0)');
-        btn.addEventListener('click', () => {
-          for (const [pid, rinp] of recoInputByPid.entries()) {
-            const val = Number(rinp.value);
-            if (!val || val <= 0) continue;
-            const main = inputByPid.get(pid);
-            if (main) main.value = String(val);
-          }
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        });
-        return btn;
-      })()
-    );
-    recoBox.appendChild(toolbar);
-
-    // группируем рекомендации по поставщикам (логика рекомендаций привязана к поставщику)
-    const bySupplier = groupBy(recommended, p => `${p.supplier_id}__${p.supplier_name}`);
-    const supplierKeys = [...bySupplier.keys()].sort((a,b)=>{
-      const an = a.split('__')[1]||''; const bn = b.split('__')[1]||'';
-      return an.localeCompare(bn,'ru');
-    });
-
-    for (const key of supplierKeys) {
-      const [sid, sname] = key.split('__');
-      const card = el('div', { className:'card' });
-      card.appendChild(el('div', { className:'muted', html: `<b>${sname || 'Поставщик'}</b>` }));
-
-      for (const p of bySupplier.get(key)) {
-        const mainInput = inputByPid.get(p.id);
-
-        const qtyInput = el('input', { type:'number', min:'0', step:'0.01', placeholder:'Кол-во', style:'width:120px' });
-        recoInputByPid.set(p.id, qtyInput);
-        if (mainInput && Number(mainInput.value) > 0) qtyInput.value = String(mainInput.value);
-
-        qtyInput.addEventListener('input', () => { if (mainInput) mainInput.value = qtyInput.value; });
-
-        const plus = el('button', { className:'btn', type:'button' }, '+1');
-        plus.addEventListener('click', () => {
-          const cur = Number(qtyInput.value) || 0;
-          qtyInput.value = String(cur + 1);
-          qtyInput.dispatchEvent(new Event('input'));
-        });
-        const clear = el('button', { className:'btn', type:'button' }, 'Очистить');
-        clear.addEventListener('click', () => {
-          qtyInput.value = '';
-          qtyInput.dispatchEvent(new Event('input'));
-        });
-
-        const line = el('div', { className:'spaced' },
-          el('span', {}, `${p.name} (${p.unit})`),
-          el('div', {}, qtyInput, ' ', plus, ' ', clear)
-        );
-        card.appendChild(line);
-      }
-      recoBox.appendChild(card);
-    }
-  }
-
-  /* ---------- РЕНДЕР ОСНОВНОЙ ФОРМЫ: ГРУППИРОВКА ПО КАТЕГОРИЯМ ---------- */
-  async function load() {
-    if (!TG_INIT) {
-      formBox.innerHTML = '<div class="card">Ошибка: Missing initData. Откройте через кнопку в боте.</div>';
-      return;
-    }
-
-    const data = await api('/api/products', { method:'GET' });
-    PRODUCTS = (data.products || []).slice().sort((a,b)=>{
-      const ac = (a.category||'').toLowerCase();
-      const bc = (b.category||'').toLowerCase();
-      if (ac === bc) return a.name.localeCompare(b.name,'ru');
-      return ac.localeCompare(bc,'ru');
-    });
-
-    if (!PRODUCTS.length) {
-      formBox.innerHTML = '<div class="card">Нет активных товаров. Попросите администратора добавить их в «Справочники».</div>';
-      return;
-    }
-
-    formBox.innerHTML = '';
-    inputByPid.clear();
-
-    // Формируем группы по category (пустую считаем «Прочее»)
-    const byCategory = groupBy(PRODUCTS, p => (p.category && p.category.trim()) ? p.category.trim() : 'Прочее');
-    const categories = [...byCategory.keys()].sort((a,b)=>a.localeCompare(b,'ru'));
-
-    for (const cat of categories) {
-      const card = el('div', { className:'card' });
-      card.appendChild(el('div', { className:'muted', html: `<b>${cat}</b>` }));
-
-      const items = byCategory.get(cat).slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
-      for (const p of items) {
-        const inp = el('input', { type:'number', min:'0', step:'0.01', placeholder:'Кол-во', style:'width:120px' });
-        inputByPid.set(p.id, inp);
-
-        // синхронизация с рекомендациями
-        inp.addEventListener('input', () => {
-          const rInp = recoInputByPid.get(p.id);
-          if (rInp) rInp.value = inp.value || '';
-        });
-
-        const row = el('div', { className:'spaced' },
-          el('label', {}, `${p.name} (${p.unit})`),
-          el('span', { className:'muted' }, p.supplier_name ? `Поставщик: ${p.supplier_name}` : ''),
-          inp
-        );
-        card.appendChild(row);
-      }
-      formBox.appendChild(card);
-    }
-
-    // Кнопки
-    $('#btnReco').onclick = renderRecommendations;
-
-    $('#btnSubmit').onclick = async () => {
-      const items = [];
-      for (const [pid, input] of inputByPid.entries()) {
-        const q = Number(input.value);
-        if (q > 0) items.push({ product_id: Number(pid), qty: q });
-      }
-      if (!items.length) { alert('Добавьте хотя бы одну позицию'); return; }
-
-      try {
-        const r = await api('/api/requisitions', { method:'POST', body:{ items }});
-        resultBox.style.display = 'block';
-        resultBox.textContent = 'Заявка создана: #' + r.requisition_id;
-
-        // очистим всё
-        inputByPid.forEach(inp => inp.value = '');
-        recoInputByPid.forEach(inp => inp.value = '');
-        recoBox.innerHTML = '';
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      } catch (e) {
-        alert(e.message);
-      }
-    };
-  }
-
-  try { window.Telegram?.WebApp?.ready?.(); } catch {}
-  load().catch(e => { formBox.innerHTML = '<div class="card">Ошибка: '+e.message+'</div>'; });
+    try{
+      const list=await apiGet('/api/products');
+      products=(Array.isArray(list)?list:[]).filter(p=>!p.disabled);
+      render();
+    }catch{showErr('Не удалось загрузить товары');}
+  })();
 })();

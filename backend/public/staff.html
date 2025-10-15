@@ -1,27 +1,232 @@
-<!DOCTYPE html>
-<html lang="ru">
+<!doctype html>
+<html lang="ru" id="staff-page">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-store" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Оформление заявки</title>
-  <link rel="stylesheet" href="./admin.css"/>
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/admin.css?v=20251015-5" />
+  <style>
+    :root {
+      --max-w: 980px;
+      --pad: 12px;
+      --gap: 12px;
+      --radius: 14px;
+      --shadow: 0 2px 10px rgba(0,0,0,.06);
+      --border: #e9edf2;
+      --border-2: #eceff3;
+      --muted: #5d6b7a;
+      --bg: #f6f7f9;
+      --bg-soft: #fafbfc;
+      --brand: #2a7ade;
+    }
+
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      background: var(--bg);
+      color: #0f172a;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .wrap {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      padding: 16px clamp(12px, 4vw, 24px) 28px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .page-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 6px 0 14px;
+    }
+    .page-title { font-size: 20px; font-weight: 700; margin: 0; }
+    .me { font-size: 12px; opacity: .7; white-space: nowrap; }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: var(--gap);
+      padding: var(--pad);
+      margin-bottom: 12px;
+    }
+
+    /* Категории */
+    details.supplier-section {
+      margin-bottom: 18px;
+      border: 1px solid var(--border-2);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #fff;
+    }
+    details.supplier-section[open] { box-shadow: var(--shadow); }
+    details.supplier-section > summary {
+      list-style: none;
+      cursor: pointer;
+      background: var(--bg-soft);
+      border-bottom: 1px solid var(--border-2);
+      padding: 0;
+    }
+
+    .supplier-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+    }
+    .supplier-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 700;
+      margin: 0;
+    }
+    .caret {
+      width: 10px; height: 10px;
+      display: inline-block;
+      border-right: 2px solid #64748b;
+      border-bottom: 2px solid #64748b;
+      transform: rotate(-45deg);
+      transition: transform .15s ease;
+      margin-right: 4px;
+    }
+    details[open] .caret { transform: rotate(45deg); }
+
+    .products {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: var(--gap);
+      padding: var(--pad);
+      background: #fff;
+    }
+    @media (min-width: 640px) { .products { grid-template-columns: 1fr 1fr; } }
+    @media (min-width: 920px) { .products { grid-template-columns: 1fr 1fr 1fr; } }
+
+    .product {
+      display: grid;
+      grid-template-rows: auto auto auto;
+      gap: 8px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      min-height: 110px;
+      transition: box-shadow .15s ease, border-color .15s ease;
+      background: #fff;
+    }
+    .product:hover {
+      border-color: #dfe6ee;
+      box-shadow: 0 2px 14px rgba(10, 20, 40, .06);
+    }
+
+    .product-name { font-weight: 600; line-height: 1.25; word-break: break-word; }
+    .product-meta {
+      font-size: 12px; color: var(--muted);
+      display: flex; gap: 8px; flex-wrap: wrap;
+    }
+
+    .qty-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .qty-input {
+      width: 100%;
+      height: 40px;
+      border: 1px solid #dce3ea;
+      border-radius: 10px;
+      padding: 0 10px;
+      font-size: 14px;
+      line-height: 40px;
+      appearance: textfield;
+      -moz-appearance: textfield;
+    }
+    .qty-input:focus {
+      border-color: #9bb7d3;
+      box-shadow: 0 0 0 3px rgba(92, 140, 196, .2);
+    }
+    .qty-input::-webkit-outer-spin-button,
+    .qty-input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    .btn {
+      height: 40px;
+      padding: 0 12px;
+      border-radius: 10px;
+      border: 1px solid #dce3ea;
+      background: #fff;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background .15s ease;
+      white-space: nowrap;
+    }
+    .btn:hover { background: #f7fafc; }
+    .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+    .btn.primary:hover { filter: brightness(1.03); }
+    .btn.square { width: 40px; padding: 0; }
+
+    .footer {
+      position: sticky;
+      bottom: 0;
+      background: rgba(246,247,249,.85);
+      backdrop-filter: blur(6px);
+      border-top: 1px solid #e6ebf1;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      margin-top: 14px;
+    }
+
+    .summary { font-size: 14px; color: #475569; }
+    .muted { color: #7b8a9a; }
+
+    .error, .success {
+      border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; display: none;
+    }
+    .error { color: #b42318; background: #fee4e2; border: 1px solid #fecdca; }
+    .success { color: #05603a; background: #e3f6ed; border: 1px solid #a3e3c6; }
+  </style>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
-  <div class="container">
-    <h2>Оформление заявки</h2>
-    <div id="form"></div>
+  <div class="wrap">
+    <header class="page-head">
+      <h1 class="page-title">Оформление заявки • v5</h1>
+      <div class="me" id="meBox">…</div>
+    </header>
 
-    <div class="spaced" style="margin-top: 1rem">
-      <button id="btnReco" class="btn" type="button">Рекомендации</button>
-      <button id="btnSubmit" class="btn" type="button">Отправить заявку</button>
-    </div>
+    <div id="err" class="error"></div>
+    <div id="ok" class="success"></div>
 
-    <div id="reco" class="list" style="margin-top: 1rem"></div>
+    <section class="card toolbar">
+      <div class="muted">Выберите нужные позиции и укажите количество.</div>
+      <button id="clearBtn" class="btn" type="button">Очистить</button>
+    </section>
 
-    <div id="result" class="card" style="display:none; margin-top:1rem"></div>
+    <main id="suppliersContainer"></main>
+
+    <footer class="footer card">
+      <div class="summary">Выбрано позиций: <b id="itemsCount">0</b></div>
+      <button id="submitBtn" class="btn primary" type="button">Отправить заявку</button>
+    </footer>
   </div>
 
-  <script src="./staff.js" defer></script>
+  <script src="/js/staff.js?v=20251015-5"></script>
 </body>
 </html>
