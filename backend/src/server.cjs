@@ -13,30 +13,22 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.SQLITE_PATH || path.join(process.cwd(), "app.sqlite");
 const CATALOG_PATH = process.env.CATALOG_PATH || "/mnt/data/catalog.json";
+const DEV_ALLOW_UNSAFE = String(process.env.DEV_ALLOW_UNSAFE || "").toLowerCase() === "true";
 
 /* -------------------- STATIC: robust discovery -------------------- */
 const candidatePublicDirs = [
-  // относительно места, где лежит этот файл
   path.join(__dirname, "../backend/public"),
   path.join(__dirname, "../public"),
   path.join(__dirname, "../../backend/public"),
   path.join(__dirname, "../../public"),
-  // относительно cwd (Railway/Node запуска)
   path.join(process.cwd(), "backend/public"),
   path.join(process.cwd(), "public"),
 ];
-
-// вернём первую существующую папку
 function resolvePublicDir() {
-  for (const p of candidatePublicDirs) {
-    if (fs.existsSync(p)) return p;
-  }
+  for (const p of candidatePublicDirs) if (fs.existsSync(p)) return p;
   return null;
 }
-
 const PUB_DIR = resolvePublicDir();
-
-// статика: подключаем, только если нашли
 if (PUB_DIR) {
   app.use(express.static(PUB_DIR));
   console.log("[static] Serving from:", PUB_DIR);
@@ -49,13 +41,11 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
   if (err) console.error("SQLite open error:", err);
   else console.log("SQLite opened at:", DB_PATH);
 });
-
 function dbAll(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
   });
 }
-
 function writeJsonAtomic(filePath, dataObj) {
   return new Promise((resolve, reject) => {
     const dir = path.dirname(filePath);
@@ -194,17 +184,13 @@ function listHtmlFiles(rootDir, maxDepth = 3) {
   walk(rootDir, 0);
   return results;
 }
-
 function trySendHtml(res, filenames) {
   for (const base of (PUB_DIR ? [PUB_DIR] : [])) {
     for (const name of filenames) {
       const p = path.join(base, name);
-      if (fs.existsSync(p)) {
-        return res.sendFile(p);
-      }
+      if (fs.existsSync(p)) return res.sendFile(p);
     }
   }
-  // fallback: покажем список html в проекте
   const found = listHtmlFiles(process.cwd());
   const list = found
     .map((f) => path.relative(process.cwd(), f))
@@ -216,24 +202,19 @@ function trySendHtml(res, filenames) {
     .send(
       `<html><body style="font-family:system-ui;padding:20px">
         <h3>Файл не найден</h3>
-        <p>Я не нашёл указанные файлы в <code>${PUB_DIR || "(папка не найдена)"}</code>.</p>
-        <p>Доступные HTML в проекте:</p>
+        <p>Ожидались файлы: ${filenames.map(f=>`<code>${f}</code>`).join(", ")}</p>
+        <p>Текущая папка статики: <code>${PUB_DIR || "(не найдена)"}</code></p>
+        <p>Найдены HTML в проекте:</p>
         <ul>${list || "<li><i>ничего не найдено</i></li>"}</ul>
-        <p>Подсказка: положи статику в <code>backend/public/</code> или <code>public/</code>.</p>
         <p><a href="/catalog.json">catalog.json</a></p>
       </body></html>`
     );
 }
 
-/* -------------------- Routes -------------------- */
-
-// Корень: редирект в админку
+/* -------------------- Routes: pages -------------------- */
 app.get("/", (req, res) => res.redirect("/admin"));
-
-// Админка
 app.get("/admin", (req, res) => {
   if (PUB_DIR) {
-    // пробуем admin.html, index.html
     const file = fs.existsSync(path.join(PUB_DIR, "admin.html"))
       ? path.join(PUB_DIR, "admin.html")
       : (fs.existsSync(path.join(PUB_DIR, "index.html"))
@@ -243,8 +224,6 @@ app.get("/admin", (req, res) => {
   }
   return trySendHtml(res, ["admin.html", "index.html"]);
 });
-
-// Страница сотрудника
 app.get("/staff", (req, res) => {
   if (PUB_DIR) {
     const file = fs.existsSync(path.join(PUB_DIR, "staff.html"))
@@ -255,7 +234,7 @@ app.get("/staff", (req, res) => {
   return trySendHtml(res, ["staff.html"]);
 });
 
-// Каталог
+/* -------------------- Routes: catalog -------------------- */
 app.get("/catalog.json", async (req, res) => {
   try {
     if (!fs.existsSync(CATALOG_PATH)) await rebuildCatalogJSON();
@@ -267,7 +246,54 @@ app.get("/catalog.json", async (req, res) => {
   }
 });
 
-// Ручная пересборка
+/* -------------------- NEW: /api/products (compat) -------------------- */
+function hasInitData(req) {
+  return Boolean(
+    req.headers["x-telegram-init-data"] ||
+    (req.body && req.body.initData) ||
+    (req.query && req.query.initData)
+  );
+}
+
+// POST /api/products  — как в Телеграм WebApp: initData в body/headers
+app.post("/api/products", async (req, res) => {
+  try {
+    if (!hasInitData(req) && !DEV_ALLOW_UNSAFE) {
+      return res.status(401).json({
+        ok: false,
+        error: "INITDATA_REQUIRED",
+        hint: "Откройте через кнопку WebApp в боте или установите DEV_ALLOW_UNSAFE=true"
+      });
+    }
+    if (!fs.existsSync(CATALOG_PATH)) await rebuildCatalogJSON();
+    const json = JSON.parse(fs.readFileSync(CATALOG_PATH, "utf8"));
+    return res.json({ ok: true, products: json.products || [] });
+  } catch (e) {
+    console.error("POST /api/products error:", e);
+    res.status(500).json({ ok: false, error: "PRODUCTS_FETCH_FAILED" });
+  }
+});
+
+// GET /api/products — допускаем без initData только в DEV_ALLOW_UNSAFE=true
+app.get("/api/products", async (req, res) => {
+  try {
+    if (!hasInitData(req) && !DEV_ALLOW_UNSAFE) {
+      return res.status(401).json({
+        ok: false,
+        error: "INITDATA_REQUIRED",
+        hint: "Откройте через кнопку WebApp в боте или установите DEV_ALLOW_UNSAFE=true"
+      });
+    }
+    if (!fs.existsSync(CATALOG_PATH)) await rebuildCatalogJSON();
+    const json = JSON.parse(fs.readFileSync(CATALOG_PATH, "utf8"));
+    return res.json({ ok: true, products: json.products || [] });
+  } catch (e) {
+    console.error("GET /api/products error:", e);
+    res.status(500).json({ ok: false, error: "PRODUCTS_FETCH_FAILED" });
+  }
+});
+
+/* -------------------- Admin: manual rebuild -------------------- */
 app.post("/admin/rebuild-catalog", async (req, res) => {
   try {
     const p = await rebuildCatalogJSON();
@@ -277,7 +303,7 @@ app.post("/admin/rebuild-catalog", async (req, res) => {
   }
 });
 
-// Health
+/* -------------------- Health -------------------- */
 app.get("/health", (req, res) =>
   res.json({
     ok: true,
@@ -285,6 +311,7 @@ app.get("/health", (req, res) =>
     catalog_exists: fs.existsSync(CATALOG_PATH),
     db_path: DB_PATH,
     static_dir: PUB_DIR || null,
+    dev_allow_unsafe: DEV_ALLOW_UNSAFE
   })
 );
 
