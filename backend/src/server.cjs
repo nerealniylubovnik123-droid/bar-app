@@ -1,4 +1,4 @@
-// ===== server.cjs =====
+// ===== server.cjs (CommonJS) =====
 const express = require("express");
 const sqlite3 = require("sqlite3");
 const path = require("path");
@@ -12,28 +12,40 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DB_PATH = process.env.SQLITE_PATH || path.join(process.cwd(), "app.sqlite");
-const CATALOG_PATH = process.env.CATALOG_PATH || "/mnt/data/catalog.json";
+const DB_PATH =
+  process.env.SQLITE_PATH || path.join(process.cwd(), "app.sqlite");
+const CATALOG_PATH =
+  process.env.CATALOG_PATH || "/mnt/data/catalog.json";
 
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: false });
+const bot = new TelegramBot(process.env.BOT_TOKEN || "", { polling: false });
 
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(path.join(process.cwd(), "backend/public")));
 
-const db = new sqlite3.Database(DB_PATH);
+const db = new sqlite3.Database(DB_PATH, (err) => {
+  if (err) console.error("SQLite open error:", err);
+  else console.log("SQLite opened at:", DB_PATH);
+});
 
-// ============ Вспомогательные функции ============
+/* ================= helpers ================= */
 function dbAll(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
   });
 }
-
+function dbGet(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
+  });
+}
 function writeJsonAtomic(filePath, dataObj) {
   return new Promise((resolve, reject) => {
     const dir = path.dirname(filePath);
-    const tmp = path.join(dir, `.tmp_${Date.now()}_${Math.random().toString(16).slice(2)}.json`);
+    const tmp = path.join(
+      dir,
+      `.tmp_${Date.now()}_${Math.random().toString(16).slice(2)}.json`
+    );
     const json = JSON.stringify(dataObj, null, 2);
     fs.mkdir(dir, { recursive: true }, (mkErr) => {
       if (mkErr) return reject(mkErr);
@@ -45,25 +57,163 @@ function writeJsonAtomic(filePath, dataObj) {
   });
 }
 
-// ============ Генерация каталога ============
+/* =============== schema discovery =============== */
+/** Возвращает список таблиц из sqlite_master */
+async function listTables() {
+  const rows = await dbAll(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+  );
+  return rows.map((r) => r.name);
+}
+/** Информация о колонках таблицы */
+async function tableInfo(table) {
+  return await dbAll(`PRAGMA table_info(${table})`);
+}
+/** Пробует составить SELECT для товаров под разные схемы */
+function buildProductsSelect(table, columns) {
+  // Библиотека синонимов
+  const syn = {
+    id: ["id", "product_id", "_id"],
+    name: ["name", "title", "product_name", "label"],
+    unit: ["unit", "uom", "measure", "units"],
+    category: ["category", "group", "section", "cat"],
+    active: ["is_active", "active", "enabled"],
+  };
+  const have = (aliases) =>
+    aliases.find((a) =>
+      columns.some((c) => c.name.toLowerCase() === a.toLowerCase())
+    );
+
+  const idCol = have(syn.id);
+  const nameCol = have(syn.name);
+  if (!idCol || !nameCol) return null; // без id и name — не товарная таблица
+
+  const unitCol = have(syn.unit);
+  const catCol = have(syn.category);
+  const actCol = have(syn.active);
+
+  const selects = [
+    `${table}.${idCol} AS id`,
+    `${table}.${nameCol} AS name`,
+    unitCol ? `${table}.${unitCol} AS unit` : `' ' AS unit`,
+    catCol ? `${table}.${catCol} AS category` : `'Без категории' AS category`,
+  ];
+
+  const where = [];
+  if (actCol) where.push(`COALESCE(${table}.${actCol},1)=1`);
+
+  const sql = `
+    SELECT ${selects.join(", ")}
+    FROM ${table}
+    ${where.length ? "WHERE " + where.join(" AND ") : ""}
+    ORDER BY COALESCE(${catCol || `'Без категории'`}, 'Без категории'), ${nameCol}
+  `;
+  return sql;
+}
+
+/** Пробует найти таблицу поставщиков */
+function buildSuppliersSelect(table, columns) {
+  const syn = {
+    id: ["id", "supplier_id", "_id"],
+    name: ["name", "title", "supplier_name"],
+    phone: ["phone", "tel", "phone_number"],
+    comment: ["comment", "notes", "description"],
+    active: ["is_active", "active", "enabled"],
+  };
+  const have = (aliases) =>
+    aliases.find((a) =>
+      columns.some((c) => c.name.toLowerCase() === a.toLowerCase())
+    );
+  const idCol = have(syn.id);
+  const nameCol = have(syn.name);
+  if (!idCol || !nameCol) return null;
+
+  const phoneCol = have(syn.phone);
+  const commentCol = have(syn.comment);
+  const actCol = have(syn.active);
+
+  const selects = [
+    `${table}.${idCol} AS id`,
+    `${table}.${nameCol} AS name`,
+    phoneCol ? `${table}.${phoneCol} AS phone` : `NULL AS phone`,
+    commentCol ? `${table}.${commentCol} AS comment` : `NULL AS comment`,
+  ];
+  const where = [];
+  if (actCol) where.push(`COALESCE(${table}.${actCol},1)=1`);
+
+  const sql = `
+    SELECT ${selects.join(", ")}
+    FROM ${table}
+    ${where.length ? "WHERE " + where.join(" AND ") : ""}
+    ORDER BY ${nameCol}
+  `;
+  return sql;
+}
+
+/* =============== catalog builder (auto-discovery) =============== */
 async function rebuildCatalogJSON() {
   try {
-    const products = await dbAll(
-      `SELECT id, name, unit, category FROM products ORDER BY COALESCE(category,'Без категории'), name`
-    ).catch(() => []);
+    const tables = await listTables();
 
-    const suppliers = await dbAll(
-      `SELECT id, name, phone, comment FROM suppliers ORDER BY name`
-    ).catch(() => []);
+    // приоритетные имена для товаров и поставщиков
+    const preferredProducts = [
+      "products",
+      "goods",
+      "items",
+      "menu",
+      "positions",
+      "catalog",
+    ];
+    const preferredSuppliers = ["suppliers", "vendors", "providers"];
+
+    let productsSql = null;
+    let suppliersSql = null;
+
+    // найдём таблицу товаров
+    // сначала по приоритетным именам, затем перебором всех таблиц
+    for (const name of [
+      ...preferredProducts,
+      ...tables.filter((t) => !preferredProducts.includes(t)),
+    ]) {
+      if (!tables.includes(name)) continue;
+      const cols = await tableInfo(name);
+      const sql = buildProductsSelect(name, cols);
+      if (sql) {
+        productsSql = sql;
+        break;
+      }
+    }
+    // найдём таблицу поставщиков
+    for (const name of [
+      ...preferredSuppliers,
+      ...tables.filter((t) => !preferredSuppliers.includes(t)),
+    ]) {
+      if (!tables.includes(name)) continue;
+      const cols = await tableInfo(name);
+      const sql = buildSuppliersSelect(name, cols);
+      if (sql) {
+        suppliersSql = sql;
+        break;
+      }
+    }
+
+    const products = productsSql ? await dbAll(productsSql) : [];
+    const suppliers = suppliersSql ? await dbAll(suppliersSql) : [];
 
     const payload = {
       updated_at: new Date().toISOString(),
       products,
       suppliers,
+      _meta: {
+        db_path: DB_PATH,
+        tables_count: tables.length,
+      },
     };
 
     await writeJsonAtomic(CATALOG_PATH, payload);
-    console.log("catalog.json обновлён:", CATALOG_PATH);
+    console.log(
+      `catalog.json обновлён (${products.length} товаров, ${suppliers.length} поставщиков)`
+    );
     return payload;
   } catch (err) {
     console.error("Ошибка при rebuildCatalogJSON:", err);
@@ -71,7 +221,8 @@ async function rebuildCatalogJSON() {
   }
 }
 
-// ============ Эндпоинт каталога ============
+/* =============== endpoints =============== */
+// Публичная раздача файла
 app.get("/catalog.json", async (req, res) => {
   try {
     if (!fs.existsSync(CATALOG_PATH)) {
@@ -85,12 +236,34 @@ app.get("/catalog.json", async (req, res) => {
   }
 });
 
-// ============ Проверка ============
-app.get("/health", (req, res) => {
-  res.json({ ok: true, db: !!db, catalog: fs.existsSync(CATALOG_PATH) });
+// Служебный rebuild по секрету (чтобы обновлять вручную при необходимости)
+app.post("/admin/rebuild-catalog", async (req, res) => {
+  try {
+    const secret = process.env.ADMIN_SECRET || "";
+    const got =
+      req.headers["x-admin-secret"] ||
+      (req.body && req.body.secret) ||
+      (req.query && req.query.secret);
+    if (secret && got !== secret) {
+      return res.status(403).json({ ok: false, error: "FORBIDDEN" });
+    }
+    const p = await rebuildCatalogJSON();
+    res.json({ ok: true, counts: { products: p.products.length, suppliers: p.suppliers.length } });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: "REBUILD_FAILED" });
+  }
 });
 
-// ============ Инициализация ============
+app.get("/health", async (req, res) => {
+  res.json({
+    ok: true,
+    db: !!db,
+    catalog_exists: fs.existsSync(CATALOG_PATH),
+    db_path: DB_PATH,
+  });
+});
+
+/* =============== init =============== */
 rebuildCatalogJSON().catch((err) =>
   console.warn("Initial catalog build failed:", err)
 );
