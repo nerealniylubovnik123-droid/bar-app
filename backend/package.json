@@ -2,11 +2,11 @@
   "name": "bar-app-backend",
   "version": "1.0.0",
   "description": "Бар-приложение на Node.js/Express с SQLite и Telegram WebApp",
-  "main": "server.cjs",
   "type": "commonjs",
+  "main": "src/server.cjs",
   "scripts": {
-    "start": "node server.cjs",
-    "dev": "nodemon server.cjs"
+    "start": "node src/server.cjs",
+    "dev": "nodemon src/server.cjs"
   },
   "dependencies": {
     "express": "^4.19.2",
