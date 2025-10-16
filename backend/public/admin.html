@@ -1,41 +1,43 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Админ-панель</title>
-  <link rel="stylesheet" href="./admin.css"/>
-  <!-- SDK Telegram WebApp -->
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-</head>
-<body>
-  <div class="container">
-    <h2>Админ-панель</h2>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Админ · Bar App</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>Админ-панель</h1>
+      <div id="me" class="me"></div>
+    </header>
 
-    <div id="warning" class="card" style="display:none"></div>
+    <main class="container">
+      <h2>Поставщики</h2>
+      <form id="form-supplier" class="toolbar">
+        <input class="input" name="name" placeholder="Название поставщика" />
+        <input class="input" name="contact_note" placeholder="Контакты / примечание" />
+        <button class="btn btn-primary" type="submit">Добавить</button>
+      </form>
+      <section id="suppliers" class="groups"></section>
 
-    <h3>Поставщики</h3>
-    <div class="card spaced">
-      <input id="supName" placeholder="Название поставщика" />
-      <input id="supNote" placeholder="Комментарий/контакты (необязательно)" />
-      <button id="btnAddSup" class="btn" type="button">Добавить поставщика</button>
-    </div>
-    <div id="suppliers" class="list"></div>
+      <h2>Товары</h2>
+      <form id="form-product" class="toolbar">
+        <input class="input" name="name" placeholder="Наименование" />
+        <input class="input" name="unit" placeholder="Ед. изм." />
+        <input class="input" name="category" placeholder="Категория" />
+        <input class="input" name="supplier_id" placeholder="ID поставщика (необязательно)" />
+        <button class="btn btn-primary" type="submit">Добавить</button>
+      </form>
+      <section id="products" class="groups"></section>
 
-    <h3>Товары</h3>
-    <div class="card spaced">
-      <input id="prodName" placeholder="Название товара" />
-      <input id="prodUnit" placeholder="Ед. изм. (шт, кг, л…)" style="width:130px" />
-      <input id="prodCategory" placeholder="Категория (опц.)" />
-      <input id="prodSupplierId" placeholder="ID поставщика" style="width:140px" />
-      <button id="btnAddProd" class="btn" type="button">Добавить товар</button>
-    </div>
-    <div id="products" class="list"></div>
+      <h2>Заявки</h2>
+      <section id="requisitions" class="groups"></section>
+    </main>
 
-    <h3>Заявки</h3>
-    <div id="requisitions" class="list"></div>
-  </div>
+    <div id="toast" class="toast" hidden></div>
 
-  <script src="./admin.js" defer></script>
-</body>
+    <script src="/shared.js"></script>
+    <script src="/admin.js"></script>
+  </body>
 </html>
