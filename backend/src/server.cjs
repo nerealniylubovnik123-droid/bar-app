@@ -12,7 +12,7 @@ const morgan = require("morgan");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
-const fetch = require("node-fetch");
+const fetch = global.fetch || ((...a) => import("node-fetch").then(m => m.default(...a)));
 const Database = require("better-sqlite3");
 
 // === новый модуль для каталога ===
