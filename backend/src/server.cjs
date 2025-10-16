@@ -1,393 +1,530 @@
-/**
- * server.cjs — основной сервер Express для bar-app
- * Telegram WebApp авторизация, SQLite (better-sqlite3)
- * Версия с проверкой роли по ADMIN_TG_IDS и JSON-каталогом
- */
+'use strict';
 
-require("dotenv").config();
-const express = require("express");
-const compression = require("compression");
-const helmet = require("helmet");
-const morgan = require("morgan");
-const cors = require("cors");
-const fs = require("fs");
-const path = require("path");
-const Database = require("better-sqlite3");
+/* ================== Imports & setup ================== */
+const dns = require('dns');
+const path = require('path');
+const fs = require('fs');
+const { pathToFileURL } = require('url');
+const crypto = require('crypto');
 
-// встроенный fetch (Node 18+)
-const fetch = global.fetch || ((...a) => import("node-fetch").then(m => m.default(...a)));
+const express = require('express');
+const helmet = require('helmet');
+const compression = require('compression');
+const morgan = require('morgan');
+const cors = require('cors');
+const dotenv = require('dotenv');
 
-// === модуль каталога (импорт/экспорт JSON) ===
-const {
-  exportCatalogToJson,
-  importCatalogFromJsonIfEmpty,
-} = require("./catalogStore.cjs");
+dns.setDefaultResultOrder?.('ipv4first');
+dotenv.config({ override: true });
 
-// === инициализация ===
 const app = express();
-const PORT = process.env.PORT || 8080;
-const DEV_ALLOW_UNSAFE = process.env.DEV_ALLOW_UNSAFE === "true";
-const BOT_TOKEN = process.env.BOT_TOKEN || "";
-const DB_FILE =
-  process.env.DB_FILE ||
-  process.env.SQLITE_PATH ||
-  path.resolve("./backend/data.sqlite");
-
-// корректный парсер ADMIN_TG_IDS (разделители: запятая, пробел, точка с запятой)
-function parseAdminIds(src) {
-  return (src || "")
-    .split(/[,;\s]+/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map(String);
-}
-const ADMIN_TG_IDS = parseAdminIds(process.env.ADMIN_TG_IDS);
-
-// === middleware ===
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+}));
 app.use(compression());
-app.use(morgan("tiny"));
-app.use(express.json({ limit: "1mb" }));
-app.use(
-  cors({
-    origin: (_o, cb) => cb(null, true),
-  })
-);
+app.use(express.json());
+app.use(morgan('dev'));
+app.use(cors({
+  origin: (_o, cb) => cb(null, true),
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'X-TG-INIT-DATA'],
+  maxAge: 86400
+}));
+app.options('*', cors());
 
-// === подключение БД ===
-const db = new Database(DB_FILE);
-db.pragma("journal_mode = WAL");
+/* ================== DB bootstrap ================== */
+let db;
+let migrate = () => {};
 
-// === миграция схемы ===
-function migrate() {
-  const schemaFile = path.resolve(__dirname, "../sql/schema.sql");
-  if (fs.existsSync(schemaFile)) {
-    const schema = fs.readFileSync(schemaFile, "utf8");
-    db.exec(schema);
+async function loadDb() {
+  try { ({ db, migrate } = require('./db')); return; }
+  catch (e1) {
+    try {
+      const mod = await import(pathToFileURL(path.resolve(__dirname, './db.js')).href);
+      db = mod.db || (mod.default && mod.default.db);
+      migrate = mod.migrate || (mod.default && mod.default.migrate) || (() => {});
+      if (db) return;
+    } catch (e2) {}
   }
-}
-migrate();
+  const Database = require('better-sqlite3');
+  const file = process.env.SQLITE_PATH || path.resolve(__dirname, '../data.sqlite');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  db = new Database(file);
+  db.pragma('foreign_keys = ON');
 
-// === проверка схемы requisitions ===
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      tg_user_id TEXT PRIMARY KEY,
+      name TEXT,
+      role TEXT NOT NULL DEFAULT 'staff'
+    );
+
+    CREATE TABLE IF NOT EXISTS suppliers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      contact_note TEXT,
+      active INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      unit TEXT NOT NULL,
+      category TEXT,
+      supplier_id INTEGER NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS requisitions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT,                    -- в старых БД может быть created_by
+      status TEXT NOT NULL DEFAULT 'created',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS requisition_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      requisition_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      qty_requested REAL NOT NULL,
+      FOREIGN KEY (requisition_id) REFERENCES requisitions(id),
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      requisition_id INTEGER NOT NULL,
+      supplier_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (requisition_id) REFERENCES requisitions(id),
+      FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      qty_requested REAL NOT NULL,
+      qty_final REAL NOT NULL,
+      note TEXT,
+      FOREIGN KEY (order_id) REFERENCES orders(id),
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity TEXT,
+      entity_id INTEGER,
+      action TEXT,
+      user_id TEXT,
+      payload_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+}
+
+/* ===== schema guard: user_id vs created_by ===== */
+let REQ_USER_COL = 'user_id';
 function ensureSchema() {
-  const cols = db
-    .prepare("PRAGMA table_info(requisitions)")
-    .all()
-    .map((r) => r.name);
-  if (cols.includes("created_by")) return "created_by";
-  if (cols.includes("user_id")) return "user_id";
-  try {
-    db.exec("ALTER TABLE requisitions ADD COLUMN user_id INTEGER");
-  } catch (_) {}
-  return "user_id";
-}
-const REQ_USER_COL = ensureSchema();
-
-// === импорт каталога из JSON (если БД пустая) ===
-try {
-  const result = importCatalogFromJsonIfEmpty(db);
-  if (result.imported) {
-    console.log("[catalog] imported from JSON");
+  const cols = db.prepare(`PRAGMA table_info('requisitions')`).all();
+  const hasUserId = cols.some(c => c.name === 'user_id');
+  const hasCreatedBy = cols.some(c => c.name === 'created_by');
+  if (!hasUserId && !hasCreatedBy) {
+    db.exec(`ALTER TABLE requisitions ADD COLUMN user_id TEXT;`);
+    REQ_USER_COL = 'user_id';
+    console.log('[migrate] added requisitions.user_id');
+  } else if (hasCreatedBy) {
+    REQ_USER_COL = 'created_by';
+    console.log('[schema] using requisitions.created_by as author column');
   } else {
-    console.log("[catalog] import skipped:", result.reason);
+    REQ_USER_COL = 'user_id';
+    console.log('[schema] using requisitions.user_id as author column');
   }
-  exportCatalogToJson(db);
-  console.log("[catalog] exported to JSON");
-} catch (e) {
-  console.warn("[catalog] bootstrap failed:", e?.message || e);
 }
 
-// === Telegram auth ===
-function verifyTelegramInitData(initData) {
-  if (DEV_ALLOW_UNSAFE) return true;
-  if (!BOT_TOKEN) return false;
-  const urlSearchParams = new URLSearchParams(initData);
-  const hash = urlSearchParams.get("hash");
-  urlSearchParams.delete("hash");
-  const dataCheckString = Array.from(urlSearchParams.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}=${v}`)
-    .join("\n");
+/* ================== Telegram notify ================== */
+async function sendTelegram(text) {
+  const token = process.env.BOT_TOKEN;
+  const idsStr = process.env.ADMIN_TG_IDS;
+  if (!token || !idsStr) return;
 
-  const crypto = require("crypto");
-  const secretKey = crypto
-    .createHmac("sha256", "WebAppData")
-    .update(BOT_TOKEN)
-    .digest();
-  const calcHash = crypto
-    .createHmac("sha256", secretKey)
-    .update(dataCheckString)
-    .digest("hex");
-  return calcHash === hash;
+  const ids = idsStr.split(',').map(s => s.trim()).filter(Boolean);
+  for (const chatId of ids) {
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true })
+      });
+      await res.json().catch(() => ({}));
+    } catch (e) { console.warn('[Telegram] fail for', chatId, String(e?.message || e)); }
+  }
 }
 
-// === аутентификация ===
-function authMiddleware(req, res, next) {
+/** Собираем текст уведомления БЕЗ статусов */
+function buildRequisitionMessage(reqId, userName) {
+  const head = db.prepare(`SELECT r.id, r.created_at FROM requisitions r WHERE r.id = ?`).get(reqId);
+  const orders = db.prepare(`
+    SELECT o.id AS order_id, s.name AS supplier_name
+    FROM orders o JOIN suppliers s ON s.id = o.supplier_id
+    WHERE o.requisition_id = ? ORDER BY s.name
+  `).all(reqId);
+  const itemsStmt = db.prepare(`
+    SELECT p.name AS product_name, p.unit, oi.qty_requested
+    FROM order_items oi JOIN products p ON p.id = oi.product_id
+    WHERE oi.order_id = ? ORDER BY p.name
+  `);
+
+  let text = `🧾 <b>Заявка #${reqId}</b> от ${userName || 'сотрудника'}\n` +
+             `Дата: ${head?.created_at || ''}\n\n`;
+  for (const o of orders) {
+    text += `🛒 <b>${o.supplier_name}</b>\n`;
+    const items = itemsStmt.all(o.order_id);
+    for (const it of items) text += ` • ${it.product_name} — ${it.qty_requested} ${it.unit || ''}\n`;
+    text += '\n';
+  }
+  return text.trim();
+}
+
+/* ================== Auth (Telegram WebApp) ================== */
+const DEV_ALLOW_UNSAFE = String(process.env.DEV_ALLOW_UNSAFE || '').toLowerCase() === 'true';
+const BOT_TOKEN = process.env.BOT_TOKEN || '';
+
+function ensureUser(tgId, name, roleGuess = 'staff') {
+  const get = db.prepare('SELECT tg_user_id, name, role FROM users WHERE tg_user_id = ?');
+  let u = get.get(tgId);
+  if (!u) {
+    db.prepare('INSERT INTO users (tg_user_id, name, role) VALUES (?,?,?)')
+      .run(tgId, name || '', roleGuess);
+    u = get.get(tgId);
+  }
+  return u;
+}
+
+function verifyTelegramInitData(initData, botToken) {
   try {
-    let initData =
-      req.headers["x-tg-init-data"] ||
-      req.query.initData ||
-      req.body?.initData;
-
-    // dev-режим
-    if (!initData && DEV_ALLOW_UNSAFE) {
-      req.user = { id: 1, name: "Dev", role: "admin" };
-      console.log("[auth][DEV] user=1 role=admin");
-      return next();
-    }
-
-    if (!initData)
-      return res.status(401).json({ error: "missing initData" });
-    if (!verifyTelegramInitData(initData))
-      return res.status(403).json({ error: "invalid initData" });
-
     const params = new URLSearchParams(initData);
-    const userRaw = params.get("user");
-    const user = JSON.parse(userRaw);
-    const userId = String(user.id);
-    const isAdmin = ADMIN_TG_IDS.includes(userId);
-    const role = isAdmin ? "admin" : "staff";
+    const hash = params.get('hash');
+    if (!hash) return { ok: false, error: 'No hash' };
 
-    db.prepare(
-      "INSERT INTO users (tg_user_id,name,role) VALUES (?,?,?) " +
-        "ON CONFLICT(tg_user_id) DO UPDATE SET name=excluded.name, role=excluded.role"
-    ).run(user.id, user.first_name || "?", role);
+    const pairs = [];
+    params.forEach((v, k) => { if (k !== 'hash') pairs.push(`${k}=${v}`); });
+    pairs.sort();
+    const dataCheckString = pairs.join('\n');
 
-    req.user = { id: user.id, name: user.first_name, role };
-    console.log(`[auth] tg_id=${userId} role=${role} ADMIN_TG_IDS=[${ADMIN_TG_IDS.join(",")}]`);
-    next();
-  } catch (e) {
-    console.error("auth err:", e);
-    res.status(500).json({ error: "auth failed" });
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+    const calcHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+    if (calcHash !== hash) return { ok: false, error: 'Bad hash' };
+
+    const userStr = params.get('user');
+    const user = userStr ? JSON.parse(userStr) : null;
+    return { ok: true, user };
+  } catch {
+    return { ok: false, error: 'Invalid initData' };
   }
 }
 
+function pickInitData(req) {
+  let initData =
+    req.header('X-TG-INIT-DATA') ||
+    (typeof req.body?.initData === 'string' ? req.body.initData : '') ||
+    (typeof req.query?.__tg === 'string' ? req.query.__tg : '') ||
+    (typeof req.query?.initData === 'string' ? req.query.initData : '');
+
+  if (!initData) return '';
+  try {
+    const maybe = decodeURIComponent(initData);
+    if (maybe.includes('=') && maybe.includes('hash=')) initData = maybe;
+  } catch {}
+  return initData;
+}
+
+function verifyInitData(req) {
+  if (DEV_ALLOW_UNSAFE) return { ok: true, user: { id: 'dev', name: 'Dev User' } };
+  if (!BOT_TOKEN) return { ok: false, error: 'Missing BOT_TOKEN' };
+
+  const initData = pickInitData(req);
+  if (!initData) return { ok: false, error: 'Missing initData' };
+
+  const v = verifyTelegramInitData(initData, BOT_TOKEN);
+  if (!v.ok) return v;
+
+  const userId = String(v.user?.id || '');
+  const fullName = [v.user?.first_name, v.user?.last_name].filter(Boolean).join(' ') || v.user?.username || '';
+  return { ok: true, user: { id: userId, name: fullName } };
+}
+
+function authMiddleware(req, res, next) {
+  const v = verifyInitData(req);
+  if (!v.ok) return res.status(401).json({ ok: false, error: v.error });
+
+  const admins = String(process.env.ADMIN_TG_IDS || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const role = admins.includes(v.user.id) ? 'admin' : 'staff';
+
+  req.user = ensureUser(v.user.id, v.user.name, role);
+  next();
+}
 function adminOnly(req, res, next) {
-  if (req.user?.role !== "admin")
-    return res.status(403).json({ error: "admin only" });
+  if (req.user?.role !== 'admin') return res.status(403).json({ ok: false, error: 'admin only' });
   next();
 }
 
-// === Telegram уведомления ===
-async function sendTelegram(text) {
-  if (!BOT_TOKEN || !ADMIN_TG_IDS.length) return;
-  for (const id of ADMIN_TG_IDS) {
+/* ================== Catalog & CRUD ================== */
+function registerCatalogRoutes(app) {
+  // Suppliers
+  app.get('/api/admin/suppliers', authMiddleware, adminOnly, (_req, res) => {
     try {
-      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: id, text }),
-      });
+      const rows = db.prepare('SELECT * FROM suppliers ORDER BY active DESC, name').all();
+      res.json({ ok: true, suppliers: rows });
+    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+  });
+
+  app.post('/api/admin/suppliers', authMiddleware, adminOnly, (req, res) => {
+    try {
+      const { name, contact_note = '' } = req.body || {};
+      if (!name || String(name).trim().length < 2) throw new Error('Название поставщика слишком короткое');
+      const r = db.prepare('INSERT INTO suppliers (name, contact_note, active) VALUES (?,?,1)')
+        .run(String(name).trim(), String(contact_note || ''));
+      const row = db.prepare('SELECT * FROM suppliers WHERE id=?').get(r.lastInsertRowid);
+      res.json({ ok: true, supplier: row });
     } catch (e) {
-      console.warn("TG send error:", e.message);
+      const msg = String(e?.message || e);
+      res.status(/UNIQUE/i.test(msg) ? 409 : 400).json({ ok: false, error: msg });
     }
-  }
+  });
+
+  // ЖЁСТКОЕ удаление поставщика со всей историей
+  app.delete('/api/admin/suppliers/:id', authMiddleware, adminOnly, (req, res) => {
+    try {
+      const sid = Number(req.params.id);
+      if (!Number.isFinite(sid)) return res.status(400).json({ ok: false, error: 'bad id' });
+
+      const trx = db.transaction((supplierId) => {
+        const orderIds = db.prepare('SELECT id FROM orders WHERE supplier_id = ?').all(supplierId).map(r => r.id);
+        if (orderIds.length) {
+          const qm = orderIds.map(()=>'?').join(',');
+          db.prepare(`DELETE FROM order_items WHERE order_id IN (${qm})`).run(...orderIds);
+          db.prepare(`DELETE FROM orders WHERE id IN (${qm})`).run(...orderIds);
+        }
+
+        const prodIds = db.prepare('SELECT id FROM products WHERE supplier_id = ?').all(supplierId).map(r => r.id);
+        if (prodIds.length) {
+          const qm = prodIds.map(()=>'?').join(',');
+          db.prepare(`DELETE FROM requisition_items WHERE product_id IN (${qm})`).run(...prodIds);
+          db.prepare(`DELETE FROM order_items WHERE product_id IN (${qm})`).run(...prodIds);
+          db.prepare(`DELETE FROM products WHERE id IN (${qm})`).run(...prodIds);
+        }
+
+        const r = db.prepare('DELETE FROM suppliers WHERE id=?').run(supplierId);
+        if (r.changes === 0) throw new Error('not found');
+      });
+
+      trx(sid);
+      res.json({ ok: true });
+    } catch (e) { res.status(400).json({ ok: false, error: String(e.message || e) }); }
+  });
+
+  // Products
+  app.get('/api/admin/products', authMiddleware, adminOnly, (_req, res) => {
+    try {
+      const rows = db.prepare(`
+        SELECT p.*, s.name AS supplier_name
+        FROM products p JOIN suppliers s ON s.id = p.supplier_id
+        ORDER BY p.active DESC, p.name
+      `).all();
+      res.json({ ok: true, products: rows });
+    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+  });
+
+  app.post('/api/admin/products', authMiddleware, adminOnly, (req, res) => {
+    try {
+      const { name, unit, supplier_id, category = 'Общее' } = req.body || {};
+      if (!name || String(name).trim().length < 2) throw new Error('Название товара слишком короткое');
+      if (!unit) throw new Error('Ед. изм. обязательна');
+      const sid = Number(supplier_id);
+      if (!Number.isFinite(sid)) throw new Error('Некорректный supplier_id');
+
+      const sup = db.prepare('SELECT id, active FROM suppliers WHERE id=?').get(sid);
+      if (!sup) throw new Error('Поставщик не найден');
+      if (sup.active === 0) throw new Error('Поставщик деактивирован');
+
+      const r = db.prepare('INSERT INTO products (name, unit, category, supplier_id, active) VALUES (?,?,?,?,1)')
+        .run(String(name).trim(), String(unit).trim(), String(category).trim(), sid);
+      const row = db.prepare('SELECT * FROM products WHERE id=?').get(r.lastInsertRowid);
+      res.json({ ok: true, product: row });
+    } catch (e) {
+      const msg = String(e?.message || e);
+      res.status(/UNIQUE/i.test(msg) ? 409 : 400).json({ ok: false, error: msg });
+    }
+  });
+
+  // ЖЁСТКОЕ удаление товара со всей историей
+  app.delete('/api/admin/products/:id', authMiddleware, adminOnly, (req, res) => {
+    try {
+      const pid = Number(req.params.id);
+      if (!Number.isFinite(pid)) return res.status(400).json({ ok: false, error: 'bad id' });
+
+      const trx = db.transaction((productId) => {
+        db.prepare('DELETE FROM order_items WHERE product_id = ?').run(productId);
+        db.prepare('DELETE FROM requisition_items WHERE product_id = ?').run(productId);
+        const r = db.prepare('DELETE FROM products WHERE id = ?').run(productId);
+        if (r.changes === 0) throw new Error('not found');
+      });
+
+      trx(pid);
+      res.json({ ok: true });
+    } catch (e) { res.status(400).json({ ok: false, error: String(e.message || e) }); }
+  });
+
+  // Публичный список для формы сотрудника (добавили supplier_id и supplier_name)
+  app.get('/api/products', authMiddleware, (_req, res) => {
+    try {
+      const rows = db.prepare(`
+        SELECT p.id, p.name, p.unit, p.category, p.supplier_id, s.name AS supplier_name
+        FROM products p JOIN suppliers s ON s.id = p.supplier_id
+        WHERE p.active = 1
+        ORDER BY p.name
+      `).all();
+      res.json({ ok: true, products: rows });
+    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
+  });
 }
 
-// === маршруты ===
-app.options("*", (_, res) => res.sendStatus(200));
-app.get("/healthz", (_, res) => res.json({ ok: true }));
-app.use("/api", authMiddleware);
-
-app.get("/api/me", (req, res) => {
-  res.json({ id: req.user.id, name: req.user.name, role: req.user.role });
-});
-
-// === продукты для сотрудников ===
-app.get("/api/products", (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT id, name, unit, category
-       FROM products WHERE IFNULL(active,1)=1 ORDER BY category,name`
-    )
-    .all();
-  res.json(rows);
-});
-
-// === создание заявки ===
-app.post("/api/requisitions", (req, res) => {
-  const items = Array.isArray(req.body.items) ? req.body.items : [];
-  if (!items.length) return res.status(400).json({ error: "empty" });
-
-  const tx = db.transaction(() => {
-    const insReq = db.prepare(
-      `INSERT INTO requisitions (created_at, ${REQ_USER_COL}) VALUES (?,?)`
-    );
-    const reqId = insReq.run(new Date().toISOString(), req.user.id)
-      .lastInsertRowid;
-
-    const insItem = db.prepare(
-      "INSERT INTO requisition_items (requisition_id,product_id,qty_requested) VALUES (?,?,?)"
-    );
-    const insOrder = db.prepare(
-      "INSERT INTO orders (requisition_id,supplier_id,status) VALUES (?,?,?)"
-    );
-    const insOrderItem = db.prepare(
-      "INSERT INTO order_items (order_id,product_id,qty_requested,qty_final) VALUES (?,?,?,?)"
-    );
-
-    const bySupp = new Map();
-    const getSupp = db.prepare("SELECT supplier_id FROM products WHERE id=?");
-
-    for (const { product_id, qty } of items) {
-      if (!product_id || qty <= 0) continue;
-      insItem.run(reqId, product_id, qty);
-      const s = getSupp.get(product_id);
-      const sid = s ? s.supplier_id : null;
-      if (!sid) continue;
-      if (!bySupp.has(sid)) bySupp.set(sid, []);
-      bySupp.get(sid).push({ product_id, qty });
+/* ================== Requisitions ================== */
+function registerRequisitionRoutes(app) {
+  app.post('/api/requisitions', authMiddleware, async (req, res) => {
+    const { items } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ ok: false, error: 'items required' });
     }
 
-    for (const [sid, list] of bySupp.entries()) {
-      const orderId = insOrder.run(reqId, sid, "draft").lastInsertRowid;
-      for (const { product_id, qty } of list) {
-        insOrderItem.run(orderId, product_id, qty, qty);
+    const trx = db.transaction(() => {
+      const col = REQ_USER_COL;
+      const rReq = db.prepare(`INSERT INTO requisitions (${col}, status) VALUES (?, 'created')`)
+        .run(req.user.tg_user_id);
+      const reqId = Number(rReq.lastInsertRowid);
+
+      const insReqItem   = db.prepare('INSERT INTO requisition_items (requisition_id, product_id, qty_requested) VALUES (?,?,?)');
+      const getProd      = db.prepare('SELECT id, supplier_id FROM products WHERE id = ? AND active = 1');
+      const insOrder     = db.prepare("INSERT INTO orders (requisition_id, supplier_id, status) VALUES (?, ?, 'draft')");
+      const insOrderItem = db.prepare('INSERT INTO order_items (order_id, product_id, qty_requested, qty_final) VALUES (?,?,?,?)');
+
+      const ordersMap = new Map();
+
+      for (const it of items) {
+        const pid = Number(it.product_id);
+        const q = Number(it.qty);
+        if (!Number.isFinite(pid) || !(q > 0)) throw new Error('Bad item');
+
+        const prod = getProd.get(pid);
+        if (!prod) throw new Error(`Product ${pid} not found or inactive`);
+
+        insReqItem.run(reqId, prod.id, q);
+
+        let orderId = ordersMap.get(prod.supplier_id);
+        if (!orderId) {
+          const rOrd = insOrder.run(reqId, prod.supplier_id);
+          orderId = Number(rOrd.lastInsertRowid);
+          ordersMap.set(prod.supplier_id, orderId);
+        }
+        insOrderItem.run(orderId, prod.id, q, q);
       }
+
+      // статус в БД оставляем, но больше нигде не показываем
+      db.prepare("UPDATE requisitions SET status = 'processed' WHERE id=?").run(reqId);
+      return reqId;
+    });
+
+    try {
+      const reqId = trx();
+      try {
+        const msg = buildRequisitionMessage(reqId, req.user.name || req.user.tg_user_id);
+        await sendTelegram(msg);
+      } catch (e) { console.warn('[telegram notify error]', e?.message || e); }
+      res.json({ ok: true, requisition_id: reqId });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: String(e?.message || e) });
     }
-    return reqId;
   });
 
-  const reqId = tx();
-  sendTelegram(`📦 Новая заявка #${reqId} от ${req.user.name}`);
-  res.json({ ok: true, requisition_id: reqId });
-});
-
-// === админ: поставщики ===
-app.get("/api/admin/suppliers", adminOnly, (req, res) => {
-  const rows = db
-    .prepare("SELECT * FROM suppliers ORDER BY active DESC, name")
-    .all();
-  res.json(rows);
-});
-
-app.post("/api/admin/suppliers", adminOnly, (req, res) => {
-  const { name, contact_note } = req.body || {};
-  if (!name) return res.status(400).json({ error: "missing name" });
-  const id = db
-    .prepare(
-      "INSERT INTO suppliers (name, contact_note, active) VALUES (?,?,1)"
-    )
-    .run(name, contact_note || "")
-    .lastInsertRowid;
-  try { exportCatalogToJson(db); } catch (_) {}
-  res.json({ ok: true, id });
-});
-
-app.delete("/api/admin/suppliers/:id", adminOnly, (req, res) => {
-  const id = Number(req.params.id);
-  const tx = db.transaction((id) => {
-    const prodIds = db
-      .prepare("SELECT id FROM products WHERE supplier_id=?")
-      .all(id)
-      .map((r) => r.id);
-    if (prodIds.length) {
-      const ids = prodIds.join(",");
-      db.exec(
-        `DELETE FROM order_items WHERE product_id IN (${ids});
-         DELETE FROM requisition_items WHERE product_id IN (${ids});`
-      );
-    }
-    db.prepare("DELETE FROM products WHERE supplier_id=?").run(id);
-    db.prepare("DELETE FROM orders WHERE supplier_id=?").run(id);
-    db.prepare("DELETE FROM suppliers WHERE id=?").run(id);
+  // Список заявок для админа (без отображения статусов)
+  app.get('/api/admin/requisitions', authMiddleware, adminOnly, (_req, res) => {
+    try {
+      const col = REQ_USER_COL;
+      const rows = db.prepare(`
+        SELECT r.id, r.created_at, u.name AS user_name
+        FROM requisitions r
+        LEFT JOIN users u ON u.tg_user_id = r.${col}
+        ORDER BY r.id DESC
+        LIMIT 200
+      `).all();
+      res.json({ ok: true, requisitions: rows });
+    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
-  tx(id);
-  try { exportCatalogToJson(db); } catch (_) {}
-  res.json({ ok: true });
-});
 
-// === админ: товары ===
-app.get("/api/admin/products", adminOnly, (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT p.*, s.name AS supplier_name
-       FROM products p
-       LEFT JOIN suppliers s ON p.supplier_id=s.id
-       ORDER BY p.active DESC, p.name`
-    )
-    .all();
-  res.json(rows);
-});
+  // Детали заявки (возвращаем состав без статусов)
+  app.get('/api/admin/requisitions/:id', authMiddleware, adminOnly, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const orders = db.prepare(`
+        SELECT o.id AS order_id, s.id AS supplier_id, s.name AS supplier_name
+        FROM orders o JOIN suppliers s ON s.id = o.supplier_id
+        WHERE o.requisition_id = ? ORDER BY s.name
+      `).all(id);
 
-app.post("/api/admin/products", adminOnly, (req, res) => {
-  const { name, unit, category, supplier_id } = req.body || {};
-  if (!name || !supplier_id)
-    return res.status(400).json({ error: "missing fields" });
-  const exists = db
-    .prepare("SELECT id FROM suppliers WHERE id=? AND IFNULL(active,1)=1")
-    .get(supplier_id);
-  if (!exists) return res.status(400).json({ error: "bad supplier" });
-  const id = db
-    .prepare(
-      "INSERT INTO products (name, unit, category, supplier_id, active) VALUES (?,?,?,?,1)"
-    )
-    .run(name, unit || "", category || "Общее", supplier_id)
-    .lastInsertRowid;
-  try { exportCatalogToJson(db); } catch (_) {}
-  res.json({ ok: true, id });
-});
+      const itemsStmt = db.prepare(`
+        SELECT oi.id AS item_id, p.name AS product_name, p.unit, oi.qty_requested, oi.qty_final, oi.note
+        FROM order_items oi JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = ? ORDER BY p.name
+      `);
 
-app.delete("/api/admin/products/:id", adminOnly, (req, res) => {
-  const id = Number(req.params.id);
-  const tx = db.transaction((id) => {
-    db.prepare("DELETE FROM order_items WHERE product_id=?").run(id);
-    db.prepare("DELETE FROM requisition_items WHERE product_id=?").run(id);
-    db.prepare("DELETE FROM products WHERE id=?").run(id);
+      const result = orders.map(o => ({
+        order_id: o.order_id,
+        supplier: { id: o.supplier_id, name: o.supplier_name },
+        items: itemsStmt.all(o.order_id),
+      }));
+
+      res.json({ ok: true, orders: result });
+    } catch (e) { res.status(500).json({ ok: false, error: String(e.message || e) }); }
   });
-  tx(id);
-  try { exportCatalogToJson(db); } catch (_) {}
-  res.json({ ok: true });
-});
+}
 
-// === админ: заявки ===
-app.get("/api/admin/requisitions", adminOnly, (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT r.id, r.created_at, u.name AS user_name
-       FROM requisitions r
-       LEFT JOIN users u ON u.tg_user_id = r.${REQ_USER_COL}
-       ORDER BY r.id DESC LIMIT 200`
-    )
-    .all();
-  res.json(rows);
-});
+/* ================== Misc & static ================== */
+app.get('/api/me', (req, res, next) => authMiddleware(req, res, () => {
+  res.json({ ok: true, user: { id: req.user.tg_user_id, name: req.user.name, role: req.user.role } });
+}));
 
-app.get("/api/admin/requisitions/:id", adminOnly, (req, res) => {
-  const id = Number(req.params.id);
-  const rows = db
-    .prepare(
-      `SELECT s.name AS supplier, p.name AS product, p.unit,
-              ri.qty_requested, oi.qty_final, oi.note
-       FROM requisition_items ri
-       LEFT JOIN products p ON ri.product_id=p.id
-       LEFT JOIN suppliers s ON p.supplier_id=s.id
-       LEFT JOIN orders o ON o.requisition_id=ri.requisition_id AND o.supplier_id=s.id
-       LEFT JOIN order_items oi ON oi.order_id=o.id AND oi.product_id=p.id
-       WHERE ri.requisition_id=?
-       ORDER BY s.name,p.name`
-    )
-    .all(id);
-  res.json(rows);
-});
+app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
-// === статика ===
-const pubDir = path.resolve(__dirname, "../public");
-app.use(express.static(pubDir));
+const pathFrontend = path.resolve(__dirname, '../public');
+app.use(express.static(pathFrontend));
+app.get(['/admin', '/admin.html'], (_req, res) => res.sendFile(path.join(pathFrontend, 'admin.html')));
+app.get(['/staff', '/staff.html'], (_req, res) => res.sendFile(path.join(pathFrontend, 'staff.html')));
+app.get('/', (_req, res) => res.sendFile(path.join(pathFrontend, 'index.html')));
+app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
-app.get(["/", "/index.html"], (_, res) =>
-  res.sendFile(path.join(pubDir, "index.html"))
-);
-app.get(["/staff", "/staff.html"], (_, res) =>
-  res.sendFile(path.join(pubDir, "staff.html"))
-);
-app.get(["/admin", "/admin.html"], (_, res) =>
-  res.sendFile(path.join(pubDir, "admin.html"))
-);
-app.get("/favicon.ico", (_, res) => res.sendStatus(204));
+/* ================== Start ================== */
+(async function start() {
+  try {
+    await loadDb();
+    if (typeof migrate === 'function') { try { migrate(); } catch (e) { console.warn('[migrate ext]', e?.message || e); } }
+    ensureSchema();
+    registerCatalogRoutes(app);
+    registerRequisitionRoutes(app);
 
-// === запуск ===
-app.listen(PORT, () => {
-  console.log(`Server started on :${PORT}`);
-  console.log("DB:", DB_FILE);
-});
+    console.log('[Config] DEV_ALLOW_UNSAFE:', DEV_ALLOW_UNSAFE);
+    console.log('[Config] ADMIN_TG_IDS:', process.env.ADMIN_TG_IDS || '(none)');
+    console.log('[schema] requisitions author column =', REQ_USER_COL);
+
+    const port = Number(process.env.PORT || 8080);
+    app.listen(port, () => console.log('API listening on', port));
+  } catch (err) {
+    console.error('Fatal start error:', err);
+    process.exit(1);
+  }
+})();
