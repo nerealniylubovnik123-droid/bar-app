@@ -23,10 +23,15 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 app.use(compression());
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 app.use(morgan('dev'));
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(s=>s.trim()).filter(Boolean);
 app.use(cors({
-  origin: (_o, cb) => cb(null, true),
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // Telegram WebView
+    if (ALLOWED_ORIGINS.length === 0) return cb(null, true);
+    cb(null, ALLOWED_ORIGINS.includes(origin));
+  },
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'X-TG-INIT-DATA'],
   maxAge: 86400
@@ -52,6 +57,7 @@ async function loadDb() {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   db = new Database(file);
   db.pragma('foreign_keys = ON');
+    db.pragma('journal_mode = WAL');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
