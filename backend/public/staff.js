@@ -1,7 +1,7 @@
-// staff.js — обновлено для упрощённого интерфейса сотрудника:
-// - без поставщиков
-// - группы товаров по категориям (сворачиваемые)
-// - каждая строка: товар + поле количества на одной линии
+// staff.js — фикс загрузки товаров и отправки:
+// - initData теперь уходит и в query, и в заголовке X-TG-INIT-DATA
+// - гибкий парсинг ответа (массив или {products|data|items})
+// - улучшены сообщения об ошибках
 
 (function () {
   const state = {
@@ -16,11 +16,9 @@
     try {
       if (window.Telegram?.WebApp?.initData) return Telegram.WebApp.initData;
     } catch (_) {}
-
     const url = new URL(window.location.href);
     const q = url.searchParams.get("initData");
     if (q) return q;
-
     if (url.hash.includes("initData=")) {
       const params = new URLSearchParams(url.hash.replace(/^#/, ""));
       return params.get("initData");
@@ -28,18 +26,32 @@
     return null;
   }
 
+  function extractList(payload) {
+    // Универсальный способ получить массив товаров
+    if (Array.isArray(payload)) return payload;
+    if (payload && Array.isArray(payload.products)) return payload.products;
+    if (payload && Array.isArray(payload.data)) return payload.data;
+    if (payload && Array.isArray(payload.items)) return payload.items;
+    return [];
+  }
+
   async function fetchMe() {
     const q = state.initData ? `?initData=${encodeURIComponent(state.initData)}` : "";
-    const res = await fetch(`/api/me${q}`);
-    if (!res.ok) throw new Error("Ошибка загрузки профиля");
+    const res = await fetch(`/api/me${q}`, {
+      headers: state.initData ? { "X-TG-INIT-DATA": state.initData } : {},
+    });
+    if (!res.ok) throw new Error(await res.text().catch(() => "Ошибка загрузки профиля"));
     return res.json();
   }
 
   async function fetchProducts() {
     const q = state.initData ? `?initData=${encodeURIComponent(state.initData)}` : "";
-    const res = await fetch(`/api/products${q}`);
-    if (!res.ok) throw new Error("Ошибка загрузки товаров");
-    return res.json();
+    const res = await fetch(`/api/products${q}`, {
+      headers: state.initData ? { "X-TG-INIT-DATA": state.initData } : {},
+    });
+    if (!res.ok) throw new Error(await res.text().catch(() => "Ошибка загрузки товаров"));
+    const data = await res.json().catch(() => []);
+    return extractList(data);
   }
 
   function groupByCategory(list) {
@@ -116,8 +128,8 @@
     state.filtered = q
       ? state.products.filter(
           (p) =>
-            p.name.toLowerCase().includes(q) ||
-            (p.category || "").toLowerCase().includes(q)
+            String(p.name || "").toLowerCase().includes(q) ||
+            String(p.category || "").toLowerCase().includes(q)
         )
       : state.products.slice();
     renderGroups();
@@ -131,7 +143,7 @@
   function collectItems() {
     const items = [];
     document.querySelectorAll(".qty-input").forEach((el) => {
-      const v = parseFloat(el.value.replace(",", "."));
+      const v = parseFloat(String(el.value).replace(",", "."));
       if (!isNaN(v) && v > 0)
         items.push({ product_id: Number(el.dataset.productId), qty: v });
     });
@@ -143,22 +155,28 @@
     el.textContent = msg;
     el.className = `toast ${ok ? "ok" : "err"}`;
     el.hidden = false;
-    setTimeout(() => (el.hidden = true), 3000);
+    setTimeout(() => (el.hidden = true), 3500);
   }
 
   async function submit() {
     const items = collectItems();
     if (items.length === 0) return toast("Добавьте количество хотя бы по одному товару", false);
 
-    const body = { items, initData: state.initData };
+    const body = { items };
+    if (state.initData) body.initData = state.initData;
+
     const res = await fetch("/api/requisitions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(state.initData ? { "X-TG-INIT-DATA": state.initData } : {}),
+      },
       body: JSON.stringify(body),
     });
 
     if (!res.ok) {
-      toast("Ошибка отправки", false);
+      const t = await res.text().catch(() => "Ошибка отправки");
+      toast(t || "Ошибка отправки", false);
       return;
     }
 
@@ -172,16 +190,25 @@
       state.me = await fetchMe();
       renderMe();
     } catch (e) {
-      console.warn(e);
+      console.warn("ME error:", e);
     }
 
     try {
-      const data = await fetchProducts();
-      state.products = Array.isArray(data) ? data.filter((p) => p.active !== 0) : [];
+      const list = await fetchProducts();
+      // Если в схеме нет поля active — берём все; если есть — фильтруем по active != 0/false
+      state.products = list.filter((p) =>
+        typeof p.active === "undefined" ? true : !!p.active
+      );
       state.filtered = state.products.slice();
       renderGroups();
     } catch (e) {
-      toast("Ошибка загрузки товаров", false);
+      console.error("PRODUCTS error:", e);
+      toast(
+        typeof e?.message === "string" && e.message.length < 200
+          ? e.message
+          : "Ошибка загрузки товаров",
+        false
+      );
     }
 
     document.getElementById("search").addEventListener("input", applySearch);
