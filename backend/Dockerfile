@@ -1,15 +1,21 @@
-# Dockerfile — для Railway / CommonJS
+# backend/Dockerfile
+FROM node:20-alpine
 
-FROM node:20-slim
+# Нужны инструменты сборки для better-sqlite3
+RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
-COPY package*.json ./
-RUN npm install --omit=dev
 
+# Ставим зависимости (без dev)
+COPY package*.json ./
+# На Alpine иногда нет готовых бинарей — принудительно собираем из исходников
+ENV npm_config_build_from_source=true
+RUN npm ci --omit=dev
+
+# Копируем остальной код
 COPY . .
 
-# Railway автоматически подставит PORT
 ENV NODE_ENV=production
-ENV SQLITE_PATH=/mnt/data/app.sqlite
+EXPOSE 8080
 
 CMD ["node", "src/server.cjs"]
