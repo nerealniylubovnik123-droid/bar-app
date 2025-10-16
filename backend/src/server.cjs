@@ -12,10 +12,11 @@ const morgan = require("morgan");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
+// ✅ кросс-совместимый fetch: встроенный в Node 18+, иначе — динамический импорт node-fetch
 const fetch = global.fetch || ((...a) => import("node-fetch").then(m => m.default(...a)));
 const Database = require("better-sqlite3");
 
-// === новый модуль для каталога ===
+// === модуль каталога JSON ===
 const {
   exportCatalogToJson,
   importCatalogFromJsonIfEmpty,
@@ -75,16 +76,12 @@ function ensureSchema() {
 }
 const REQ_USER_COL = ensureSchema();
 
-// === импорт каталога из JSON (если пустая БД) ===
+// === импорт/экспорт каталога при старте ===
 try {
   const result = importCatalogFromJsonIfEmpty(db);
-  if (result.imported) {
-    console.log("[catalog] imported from JSON");
-  } else {
-    console.log("[catalog] import skipped:", result.reason);
-  }
+  console.log("[catalog] import:", result.imported ? "done" : `skipped (${result.reason})`);
   exportCatalogToJson(db);
-  console.log("[catalog] exported to JSON");
+  console.log("[catalog] export: done");
 } catch (e) {
   console.warn("[catalog] bootstrap failed:", e?.message || e);
 }
@@ -119,10 +116,13 @@ function authMiddleware(req, res, next) {
       req.headers["x-tg-init-data"] ||
       req.query.initData ||
       req.body?.initData;
+
+    // ✅ DEV-фолбэк: теперь роль по умолчанию — staff (безопаснее)
     if (!initData && DEV_ALLOW_UNSAFE) {
-      req.user = { id: 1, name: "Dev", role: "admin" };
+      req.user = { id: 1, name: "Dev", role: "staff" };
       return next();
     }
+
     if (!initData) return res.status(401).json({ error: "missing initData" });
     if (!verifyTelegramInitData(initData))
       return res.status(403).json({ error: "invalid initData" });
@@ -131,10 +131,12 @@ function authMiddleware(req, res, next) {
     const userRaw = params.get("user");
     const user = JSON.parse(userRaw);
     const role = ADMIN_TG_IDS.includes(String(user.id)) ? "admin" : "staff";
+
     db.prepare(
       "INSERT INTO users (tg_user_id,name,role) VALUES (?,?,?) ON CONFLICT(tg_user_id) DO UPDATE SET name=excluded.name,role=excluded.role"
     ).run(user.id, user.first_name || "?", role);
-    req.user = { id: user.id, name: user.first_name, role };
+
+    req.user = { id: String(user.id), name: user.first_name, role };
     next();
   } catch (e) {
     console.error("auth err:", e);
@@ -153,14 +155,11 @@ async function sendTelegram(text) {
   if (!BOT_TOKEN || !ADMIN_TG_IDS.length) return;
   for (const id of ADMIN_TG_IDS) {
     try {
-      await fetch(
-        `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: id, text }),
-        }
-      );
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: id, text }),
+      });
     } catch (e) {
       console.warn("TG send error:", e.message);
     }
@@ -250,9 +249,7 @@ app.post("/api/admin/suppliers", adminOnly, (req, res) => {
     .prepare("INSERT INTO suppliers (name, contact_note, active) VALUES (?,?,1)")
     .run(name, contact_note || "")
     .lastInsertRowid;
-  try {
-    exportCatalogToJson(db);
-  } catch (_) {}
+  try { exportCatalogToJson(db); } catch (_) {}
   res.json({ ok: true, id });
 });
 
@@ -275,9 +272,7 @@ app.delete("/api/admin/suppliers/:id", adminOnly, (req, res) => {
     db.prepare("DELETE FROM suppliers WHERE id=?").run(id);
   });
   tx(id);
-  try {
-    exportCatalogToJson(db);
-  } catch (_) {}
+  try { exportCatalogToJson(db); } catch (_) {}
   res.json({ ok: true });
 });
 
@@ -308,9 +303,7 @@ app.post("/api/admin/products", adminOnly, (req, res) => {
     )
     .run(name, unit || "", category || "Общее", supplier_id)
     .lastInsertRowid;
-  try {
-    exportCatalogToJson(db);
-  } catch (_) {}
+  try { exportCatalogToJson(db); } catch (_) {}
   res.json({ ok: true, id });
 });
 
@@ -322,9 +315,7 @@ app.delete("/api/admin/products/:id", adminOnly, (req, res) => {
     db.prepare("DELETE FROM products WHERE id=?").run(id);
   });
   tx(id);
-  try {
-    exportCatalogToJson(db);
-  } catch (_) {}
+  try { exportCatalogToJson(db); } catch (_) {}
   res.json({ ok: true });
 });
 

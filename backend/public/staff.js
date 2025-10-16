@@ -1,4 +1,4 @@
-/* staff.js — версия с ролевым гардом и аккордеонами */
+/* staff.js — актуальная версия (ролевой гард, аккордеоны, без ошибок DOM) */
 import { getInitData, withInit, fetchJSON } from "./shared.js";
 
 const state = {
@@ -29,6 +29,7 @@ function groupByCategory(products) {
 }
 
 function render() {
+  if (!els.catalog) return;
   els.catalog.innerHTML = "";
   const acc = document.createElement("div");
   acc.className = "accordion";
@@ -90,16 +91,18 @@ function render() {
   }
 
   els.catalog.appendChild(acc);
-  els.loading.style.display = "none";
+  if (els.loading) els.loading.style.display = "none";
   els.catalog.style.display = "block";
   validateSubmit();
 }
 
 function collectItems() {
   const items = [];
+  if (!els.catalog) return items;
   els.catalog.querySelectorAll(".row").forEach((row) => {
     const pid = Number(row.dataset.pid);
     const input = row.querySelector('input[type="number"]');
+    if (!input) return;
     const v = (input.value || "").toString().replace(",", ".");
     const qty = parseFloat(v);
     if (Number.isFinite(qty) && qty > 0) items.push({ product_id: pid, qty });
@@ -108,6 +111,7 @@ function collectItems() {
 }
 
 function validateSubmit() {
+  if (!els.submitBtn) return;
   els.submitBtn.disabled = collectItems().length === 0;
 }
 
@@ -142,23 +146,22 @@ async function submit() {
 }
 
 async function main() {
-  // 1) Ролевой гард: админов уводим на /admin
+  // === шаг 1. Проверяем роль ===
   let me = null;
   try {
     me = await withInit((headers) => fetchJSON("/api/me", { headers }));
   } catch (e) {
-    // если сервер в проде и мы вне Telegram — /api/me вернёт 401/403
-    // в деве с DEV_ALLOW_UNSAFE=true — пройдёт
+    console.warn("me check failed:", e.message);
   }
   if (me && me.role === "admin") {
     window.location.replace("/admin");
     return;
   }
 
-  // Показать имя пользователя (если есть)
-  if (me?.name) els.userInfo.textContent = me.name;
+  // === шаг 2. Отображаем имя пользователя ===
+  if (me?.name && els.userInfo) els.userInfo.textContent = me.name;
 
-  // 2) Загрузка каталога
+  // === шаг 3. Загружаем каталог ===
   const products = await withInit((headers) => fetchJSON("/api/products", { headers }));
   state.products = Array.isArray(products) ? products : [];
   state.products = state.products.map((p) => {
@@ -166,14 +169,15 @@ async function main() {
     delete c.supplier_id;
     delete c.supplier_name;
     return c;
-    });
+  });
   state.byCat = groupByCategory(state.products);
 
+  // === шаг 4. Рендерим интерфейс ===
   render();
-  els.submitBtn.addEventListener("click", submit);
+  if (els.submitBtn) els.submitBtn.addEventListener("click", submit);
 }
 
 main().catch((e) => {
-  console.error(e);
-  els.loading.textContent = "Ошибка загрузки. Обновите страницу.";
+  console.error("Ошибка загрузки:", e);
+  if (els.loading) els.loading.textContent = "Ошибка загрузки. Обновите страницу.";
 });
