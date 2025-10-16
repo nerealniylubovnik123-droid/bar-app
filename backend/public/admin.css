@@ -13,3 +13,38 @@ th, td { border: 1px solid #ddd; padding: .35rem .5rem; text-align: left; }
 header { margin-bottom: .5rem; }
 .link { text-decoration: none; }
 .link:hover { text-decoration: underline; }
+
+/* ---- Сотрудник: аккуратные строки и аккордеоны ---- */
+.accordion { display: flex; flex-direction: column; gap: .5rem; }
+.accordion details { border: 1px solid #ddd; border-radius: 8px; background: #fff; }
+.accordion summary { padding: .6rem .8rem; cursor: pointer; user-select: none; font-weight: 600; }
+.accordion .group-body { padding: .5rem .75rem .75rem; display: flex; flex-direction: column; gap: .5rem; }
+
+.item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+}
+.item-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.item-qty {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+}
+.item-qty input[type="number"] {
+  width: 90px; /* фиксированная ширина, чтобы не "гуляло" */
+  text-align: right;
+}
+
+/* мелкие доработки для мобильных */
+@media (max-width: 420px) {
+  .item-qty input[type="number"] { width: 80px; }
+}
