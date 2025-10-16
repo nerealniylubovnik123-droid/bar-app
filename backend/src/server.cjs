@@ -1,7 +1,7 @@
 /**
  * server.cjs — основной сервер Express для bar-app
  * Telegram WebApp авторизация, SQLite (better-sqlite3)
- * Версия с поддержкой JSON каталога (/mnt/data/catalog.json)
+ * Версия с проверкой роли по ADMIN_TG_IDS и JSON-каталогом
  */
 
 require("dotenv").config();
@@ -12,11 +12,12 @@ const morgan = require("morgan");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
-// ✅ кросс-совместимый fetch: встроенный в Node 18+, иначе — динамический импорт node-fetch
-const fetch = global.fetch || ((...a) => import("node-fetch").then(m => m.default(...a)));
 const Database = require("better-sqlite3");
 
-// === модуль каталога JSON ===
+// встроенный fetch (Node 18+)
+const fetch = global.fetch || ((...a) => import("node-fetch").then(m => m.default(...a)));
+
+// === модуль каталога (импорт/экспорт JSON) ===
 const {
   exportCatalogToJson,
   importCatalogFromJsonIfEmpty,
@@ -26,17 +27,23 @@ const {
 const app = express();
 const PORT = process.env.PORT || 8080;
 const DEV_ALLOW_UNSAFE = process.env.DEV_ALLOW_UNSAFE === "true";
-const ADMIN_TG_IDS = (process.env.ADMIN_TG_IDS || "")
-  .split(",")
-  .map((x) => x.trim())
-  .filter(Boolean);
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
 const DB_FILE =
   process.env.DB_FILE ||
   process.env.SQLITE_PATH ||
   path.resolve("./backend/data.sqlite");
 
-// === модули безопасности и логов ===
+// корректный парсер ADMIN_TG_IDS (разделители: запятая, пробел, точка с запятой)
+function parseAdminIds(src) {
+  return (src || "")
+    .split(/[,;\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map(String);
+}
+const ADMIN_TG_IDS = parseAdminIds(process.env.ADMIN_TG_IDS);
+
+// === middleware ===
 app.use(helmet());
 app.use(compression());
 app.use(morgan("tiny"));
@@ -51,7 +58,7 @@ app.use(
 const db = new Database(DB_FILE);
 db.pragma("journal_mode = WAL");
 
-// === миграция схемы (упрощённо) ===
+// === миграция схемы ===
 function migrate() {
   const schemaFile = path.resolve(__dirname, "../sql/schema.sql");
   if (fs.existsSync(schemaFile)) {
@@ -61,7 +68,7 @@ function migrate() {
 }
 migrate();
 
-// === определяем, какая колонка user_id или created_by ===
+// === проверка схемы requisitions ===
 function ensureSchema() {
   const cols = db
     .prepare("PRAGMA table_info(requisitions)")
@@ -76,12 +83,16 @@ function ensureSchema() {
 }
 const REQ_USER_COL = ensureSchema();
 
-// === импорт/экспорт каталога при старте ===
+// === импорт каталога из JSON (если БД пустая) ===
 try {
   const result = importCatalogFromJsonIfEmpty(db);
-  console.log("[catalog] import:", result.imported ? "done" : `skipped (${result.reason})`);
+  if (result.imported) {
+    console.log("[catalog] imported from JSON");
+  } else {
+    console.log("[catalog] import skipped:", result.reason);
+  }
   exportCatalogToJson(db);
-  console.log("[catalog] export: done");
+  console.log("[catalog] exported to JSON");
 } catch (e) {
   console.warn("[catalog] bootstrap failed:", e?.message || e);
 }
@@ -110,6 +121,7 @@ function verifyTelegramInitData(initData) {
   return calcHash === hash;
 }
 
+// === аутентификация ===
 function authMiddleware(req, res, next) {
   try {
     let initData =
@@ -117,26 +129,32 @@ function authMiddleware(req, res, next) {
       req.query.initData ||
       req.body?.initData;
 
-    // ✅ DEV-фолбэк: теперь роль по умолчанию — staff (безопаснее)
+    // dev-режим
     if (!initData && DEV_ALLOW_UNSAFE) {
-      req.user = { id: 1, name: "Dev", role: "staff" };
+      req.user = { id: 1, name: "Dev", role: "admin" };
+      console.log("[auth][DEV] user=1 role=admin");
       return next();
     }
 
-    if (!initData) return res.status(401).json({ error: "missing initData" });
+    if (!initData)
+      return res.status(401).json({ error: "missing initData" });
     if (!verifyTelegramInitData(initData))
       return res.status(403).json({ error: "invalid initData" });
 
     const params = new URLSearchParams(initData);
     const userRaw = params.get("user");
     const user = JSON.parse(userRaw);
-    const role = ADMIN_TG_IDS.includes(String(user.id)) ? "admin" : "staff";
+    const userId = String(user.id);
+    const isAdmin = ADMIN_TG_IDS.includes(userId);
+    const role = isAdmin ? "admin" : "staff";
 
     db.prepare(
-      "INSERT INTO users (tg_user_id,name,role) VALUES (?,?,?) ON CONFLICT(tg_user_id) DO UPDATE SET name=excluded.name,role=excluded.role"
+      "INSERT INTO users (tg_user_id,name,role) VALUES (?,?,?) " +
+        "ON CONFLICT(tg_user_id) DO UPDATE SET name=excluded.name, role=excluded.role"
     ).run(user.id, user.first_name || "?", role);
 
-    req.user = { id: String(user.id), name: user.first_name, role };
+    req.user = { id: user.id, name: user.first_name, role };
+    console.log(`[auth] tg_id=${userId} role=${role} ADMIN_TG_IDS=[${ADMIN_TG_IDS.join(",")}]`);
     next();
   } catch (e) {
     console.error("auth err:", e);
@@ -195,7 +213,8 @@ app.post("/api/requisitions", (req, res) => {
     const insReq = db.prepare(
       `INSERT INTO requisitions (created_at, ${REQ_USER_COL}) VALUES (?,?)`
     );
-    const reqId = insReq.run(new Date().toISOString(), req.user.id).lastInsertRowid;
+    const reqId = insReq.run(new Date().toISOString(), req.user.id)
+      .lastInsertRowid;
 
     const insItem = db.prepare(
       "INSERT INTO requisition_items (requisition_id,product_id,qty_requested) VALUES (?,?,?)"
@@ -246,7 +265,9 @@ app.post("/api/admin/suppliers", adminOnly, (req, res) => {
   const { name, contact_note } = req.body || {};
   if (!name) return res.status(400).json({ error: "missing name" });
   const id = db
-    .prepare("INSERT INTO suppliers (name, contact_note, active) VALUES (?,?,1)")
+    .prepare(
+      "INSERT INTO suppliers (name, contact_note, active) VALUES (?,?,1)"
+    )
     .run(name, contact_note || "")
     .lastInsertRowid;
   try { exportCatalogToJson(db); } catch (_) {}
