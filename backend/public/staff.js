@@ -1,7 +1,7 @@
-// staff.js — фикс загрузки товаров и отправки:
-// - initData теперь уходит и в query, и в заголовке X-TG-INIT-DATA
-// - гибкий парсинг ответа (массив или {products|data|items})
-// - улучшены сообщения об ошибках
+// staff.js — фикс Missing initData:
+// - initData из Telegram, URL, localStorage('tg_init_data')
+// - если нет — prompt() → сохраняем в localStorage и перезагружаем
+// - отправляем initData в query, заголовке X-TG-INIT-DATA и (для POST) в теле
 
 (function () {
   const state = {
@@ -11,23 +11,55 @@
     initData: null,
   };
 
-  // Получаем initData из Telegram WebApp или из URL
   function resolveInitData() {
+    // 1) Telegram WebApp
     try {
       if (window.Telegram?.WebApp?.initData) return Telegram.WebApp.initData;
     } catch (_) {}
+
     const url = new URL(window.location.href);
+    // 2) query ?initData=...
     const q = url.searchParams.get("initData");
     if (q) return q;
-    if (url.hash.includes("initData=")) {
-      const params = new URLSearchParams(url.hash.replace(/^#/, ""));
-      return params.get("initData");
+
+    // 3) hash #initData=...
+    if (url.hash && url.hash.includes("initData=")) {
+      try {
+        const params = new URLSearchParams(url.hash.replace(/^#/, ""));
+        const h = params.get("initData");
+        if (h) return h;
+      } catch (_) {}
     }
+
+    // 4) localStorage
+    try {
+      const ls = localStorage.getItem("tg_init_data");
+      if (ls) return ls;
+    } catch (_) {}
+
     return null;
   }
 
+  function ensureInitDataOrPrompt() {
+    if (state.initData) return true;
+    // Попросим вставить initData вручную (для дев/стенда)
+    const v = window.prompt(
+      "Требуется Telegram WebApp initData.\nВставьте строку initData сюда (или откройте страницу из Telegram):",
+      ""
+    );
+    if (v && v.trim().length > 0) {
+      state.initData = v.trim();
+      try {
+        localStorage.setItem("tg_init_data", state.initData);
+      } catch (_) {}
+      // перезагружаем, чтобы вся логика пошла с initData
+      location.replace(location.pathname + "?initData=" + encodeURIComponent(state.initData));
+      return false; // сейчас произойдет reload
+    }
+    return false;
+  }
+
   function extractList(payload) {
-    // Универсальный способ получить массив товаров
     if (Array.isArray(payload)) return payload;
     if (payload && Array.isArray(payload.products)) return payload.products;
     if (payload && Array.isArray(payload.data)) return payload.data;
@@ -186,6 +218,13 @@
 
   async function init() {
     state.initData = resolveInitData();
+
+    // Если нет initData — запросим у пользователя (dev-стенд)
+    if (!state.initData) {
+      const willContinue = ensureInitDataOrPrompt();
+      if (!willContinue) return; // произойдёт перезагрузка или пользователь отменил
+    }
+
     try {
       state.me = await fetchMe();
       renderMe();
@@ -195,7 +234,6 @@
 
     try {
       const list = await fetchProducts();
-      // Если в схеме нет поля active — берём все; если есть — фильтруем по active != 0/false
       state.products = list.filter((p) =>
         typeof p.active === "undefined" ? true : !!p.active
       );
