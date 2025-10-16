@@ -1,10 +1,10 @@
-/* staff.js — новая версия (аккордеоны по категориям, без отображения поставщика) */
+/* staff.js — версия с ролевым гардом и аккордеонами */
 import { getInitData, withInit, fetchJSON } from "./shared.js";
 
 const state = {
   products: [],
   byCat: new Map(),
-  expanded: new Set(), // сохранение развёрнутых групп в сессии
+  expanded: new Set(),
 };
 
 const els = {
@@ -21,7 +21,6 @@ function groupByCategory(products) {
     if (!byCat.has(cat)) byCat.set(cat, []);
     byCat.get(cat).push(p);
   }
-  // сортировка: категории по алфавиту, внутри — по имени
   return new Map(
     [...byCat.entries()]
       .sort((a, b) => a[0].localeCompare(b[0], "ru"))
@@ -76,7 +75,7 @@ function render() {
       input.step = "any";
       input.inputMode = "decimal";
       input.placeholder = "0";
-      input.addEventListener("input", onAnyQtyChange);
+      input.addEventListener("input", validateSubmit);
 
       qty.appendChild(input);
       li.appendChild(title);
@@ -101,26 +100,20 @@ function collectItems() {
   els.catalog.querySelectorAll(".row").forEach((row) => {
     const pid = Number(row.dataset.pid);
     const input = row.querySelector('input[type="number"]');
-    const qty = parseFloat(input.value.replace(",", "."));
-    if (Number.isFinite(qty) && qty > 0) {
-      items.push({ product_id: pid, qty });
-    }
+    const v = (input.value || "").toString().replace(",", ".");
+    const qty = parseFloat(v);
+    if (Number.isFinite(qty) && qty > 0) items.push({ product_id: pid, qty });
   });
   return items;
 }
 
 function validateSubmit() {
-  const has = collectItems().length > 0;
-  els.submitBtn.disabled = !has;
-}
-
-function onAnyQtyChange() {
-  validateSubmit();
+  els.submitBtn.disabled = collectItems().length === 0;
 }
 
 async function submit() {
   const items = collectItems();
-  if (items.length === 0) return;
+  if (!items.length) return;
 
   els.submitBtn.disabled = true;
   els.submitBtn.textContent = "Отправка…";
@@ -132,41 +125,48 @@ async function submit() {
         body: JSON.stringify({ items, initData }),
       })
     );
-
     if (res?.ok) {
-      // очистить поля
       els.catalog.querySelectorAll('input[type="number"]').forEach((i) => (i.value = ""));
       validateSubmit();
       els.submitBtn.textContent = "Готово ✅";
       setTimeout(() => (els.submitBtn.textContent = "Отправить заявку"), 1200);
       return;
     }
-    throw new Error("Ошибка сервера");
+    throw new Error("Server error");
   } catch (e) {
     console.error(e);
-    alert("Не удалось отправить заявку. Проверьте соединение и попробуйте ещё раз.");
+    alert("Не удалось отправить заявку. Попробуйте ещё раз.");
     els.submitBtn.textContent = "Отправить заявку";
     validateSubmit();
   }
 }
 
 async function main() {
-  // показать краткую информацию о пользователе
+  // 1) Ролевой гард: админов уводим на /admin
+  let me = null;
   try {
-    const me = await withInit((headers) => fetchJSON("/api/me", { headers }));
-    if (me?.name) els.userInfo.textContent = me.name;
-  } catch (_) {}
+    me = await withInit((headers) => fetchJSON("/api/me", { headers }));
+  } catch (e) {
+    // если сервер в проде и мы вне Telegram — /api/me вернёт 401/403
+    // в деве с DEV_ALLOW_UNSAFE=true — пройдёт
+  }
+  if (me && me.role === "admin") {
+    window.location.replace("/admin");
+    return;
+  }
 
-  // получить каталог (без показа поставщиков)
+  // Показать имя пользователя (если есть)
+  if (me?.name) els.userInfo.textContent = me.name;
+
+  // 2) Загрузка каталога
   const products = await withInit((headers) => fetchJSON("/api/products", { headers }));
   state.products = Array.isArray(products) ? products : [];
-  // удаляем возможные следы снапшота поставщика, если пришли
   state.products = state.products.map((p) => {
-    const copy = { ...p };
-    delete copy.supplier_id;
-    delete copy.supplier_name;
-    return copy;
-  });
+    const c = { ...p };
+    delete c.supplier_id;
+    delete c.supplier_name;
+    return c;
+    });
   state.byCat = groupByCategory(state.products);
 
   render();

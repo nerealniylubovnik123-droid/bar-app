@@ -1,41 +1,79 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Админ-панель</title>
-  <link rel="stylesheet" href="./admin.css"/>
-  <!-- SDK Telegram WebApp -->
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Панель администратора</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+
+  <!-- 🔒 Ролевой гард: не-админов отправляем на /staff -->
+  <script>
+  (function(){
+    function getInitHeaders(){
+      try {
+        if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) {
+          return { "X-TG-INIT-DATA": window.Telegram.WebApp.initData };
+        }
+      } catch(_) {}
+      return {};
+    }
+
+    async function guard() {
+      try {
+        const headers = getInitHeaders();
+        const res = await fetch("/api/me", { headers });
+        if (!res.ok) return; // вне Telegram и при DEV_ALLOW_UNSAFE=false — ничего не делаем
+        const me = await res.json();
+        if (!me || me.role !== "admin") {
+          window.location.replace("/staff");
+        }
+      } catch(_) {}
+    }
+
+    guard();
+  })();
+  </script>
 </head>
+
 <body>
   <div class="container">
-    <h2>Админ-панель</h2>
+    <h1>Панель администратора</h1>
+    <div id="userInfo" class="note"></div>
 
-    <div id="warning" class="card" style="display:none"></div>
+    <section id="suppliersSection">
+      <h2>Поставщики</h2>
+      <div id="suppliersList">Загрузка…</div>
+      <form id="newSupplierForm">
+        <input type="text" id="supplierName" placeholder="Название поставщика" required />
+        <input type="text" id="supplierContact" placeholder="Контакт / примечание" />
+        <button type="submit" class="btn btn-primary">Добавить</button>
+      </form>
+    </section>
 
-    <h3>Поставщики</h3>
-    <div class="card spaced">
-      <input id="supName" placeholder="Название поставщика" />
-      <input id="supNote" placeholder="Комментарий/контакты (необязательно)" />
-      <button id="btnAddSup" class="btn" type="button">Добавить поставщика</button>
-    </div>
-    <div id="suppliers" class="list"></div>
+    <hr />
 
-    <h3>Товары</h3>
-    <div class="card spaced">
-      <input id="prodName" placeholder="Название товара" />
-      <input id="prodUnit" placeholder="Ед. изм. (шт, кг, л…)" style="width:130px" />
-      <input id="prodCategory" placeholder="Категория (опц.)" />
-      <input id="prodSupplierId" placeholder="ID поставщика" style="width:140px" />
-      <button id="btnAddProd" class="btn" type="button">Добавить товар</button>
-    </div>
-    <div id="products" class="list"></div>
+    <section id="productsSection">
+      <h2>Товары</h2>
+      <div id="productsList">Загрузка…</div>
+      <form id="newProductForm">
+        <input type="text" id="productName" placeholder="Название товара" required />
+        <input type="text" id="productUnit" placeholder="Ед. изм. (шт, кг…)" />
+        <input type="text" id="productCategory" placeholder="Категория" value="Общее" />
+        <select id="productSupplier"></select>
+        <button type="submit" class="btn btn-primary">Добавить</button>
+      </form>
+    </section>
 
-    <h3>Заявки</h3>
-    <div id="requisitions" class="list"></div>
+    <hr />
+
+    <section id="requisitionsSection">
+      <h2>Заявки</h2>
+      <div id="requisitionsList">Загрузка…</div>
+      <div id="requisitionDetail" style="display:none"></div>
+    </section>
   </div>
 
-  <script src="./admin.js" defer></script>
+  <script src="./shared.js"></script>
+  <script src="./admin.js"></script>
 </body>
 </html>
