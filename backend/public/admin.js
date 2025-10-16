@@ -1,263 +1,145 @@
-// admin.js — работает без initData. Роль определяется на бэке по tg_user_id.
-// Источник tg_user_id: Telegram.WebApp.initDataUnsafe.user.id -> URL ?tg_user_id= -> localStorage -> prompt().
+(() => {
+  'use strict';
+  const API_BASE = location.origin;
 
-(function () {
-  const state = {
-    tgUserId: null,
-    me: null,
-    suppliers: [],
-    products: [],
-    requisitions: []
-  };
-
-  // ---- ID detection (без initData) ----
-  function resolveTgUserId() {
-    // 1) Telegram WebApp
-    try {
-      const id = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
-      if (id) return Number(id);
-    } catch (_) {}
-
-    const url = new URL(window.location.href);
-    // 2) query ?tg_user_id=
-    const fromQuery = url.searchParams.get("tg_user_id");
-    if (fromQuery && Number(fromQuery)) return Number(fromQuery);
-
-    // 3) localStorage
-    try {
-      const ls = localStorage.getItem("tg_user_id");
-      if (ls && Number(ls)) return Number(ls);
-    } catch (_) {}
-
-    return null;
-  }
-
-  function ensureTgUserId() {
-    state.tgUserId = resolveTgUserId();
-    if (state.tgUserId) {
-      try { localStorage.setItem("tg_user_id", String(state.tgUserId)); } catch (_) {}
-      return true;
+  function getInitData() {
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (tg?.initData) return tg.initData;
+    if (tg?.initDataUnsafe) {
+      try {
+        const p = new URLSearchParams();
+        const u = tg.initDataUnsafe;
+        if (u.query_id) p.set('query_id', u.query_id);
+        if (u.user) p.set('user', JSON.stringify(u.user));
+        if (u.start_param) p.set('start_param', u.start_param);
+        if (u.auth_date) p.set('auth_date', String(u.auth_date));
+        if (u.hash) p.set('hash', u.hash);
+        if (p.get('hash')) return p.toString();
+      } catch {}
     }
-    const v = window.prompt("Введите ваш Telegram ID (число). Админ — 504348666:", "");
-    if (!v || !Number(v)) return false;
-    state.tgUserId = Number(v);
-    try { localStorage.setItem("tg_user_id", String(state.tgUserId)); } catch (_) {}
-    // Добавим в URL для наглядности
-    const url = new URL(location.href);
-    url.searchParams.set("tg_user_id", String(state.tgUserId));
-    history.replaceState(null, "", url.toString());
-    return true;
-  }
-
-  // ---- helpers ----
-  function qstr() {
-    return state.tgUserId ? `?tg_user_id=${encodeURIComponent(state.tgUserId)}` : "";
-  }
-  function authHeaders() {
-    return state.tgUserId ? { "X-TG-USER-ID": String(state.tgUserId) } : {};
-  }
-
-  function toast(msg, ok = true) {
-    let el = document.getElementById("toast");
-    if (!el) {
-      el = document.createElement("div");
-      el.id = "toast";
-      el.className = "toast";
-      document.body.appendChild(el);
+    if (location.hash.includes('tgWebAppData=')) {
+      try {
+        const h = new URLSearchParams(location.hash.slice(1));
+        const raw = h.get('tgWebAppData');
+        if (raw) return decodeURIComponent(raw);
+      } catch {}
     }
-    el.textContent = msg;
-    el.className = `toast ${ok ? "ok" : "err"}`;
-    el.hidden = false;
-    setTimeout(() => (el.hidden = true), 3500);
+    return '';
   }
+  const TG_INIT = getInitData();
 
-  // ---- API ----
-  async function apiGet(path) {
-    const res = await fetch(`${path}${qstr()}`, { headers: authHeaders() });
-    if (!res.ok) throw new Error(await res.text().catch(() => "Ошибка запроса"));
-    return res.json();
-  }
-  async function apiPost(path, body) {
-    const res = await fetch(`${path}${qstr()}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify(body || {})
-    });
-    if (!res.ok) throw new Error(await res.text().catch(() => "Ошибка запроса"));
-    return res.json();
-  }
-  async function apiDelete(path) {
-    const res = await fetch(`${path}${qstr()}`, {
-      method: "DELETE",
-      headers: authHeaders()
-    });
-    if (!res.ok) throw new Error(await res.text().catch(() => "Ошибка запроса"));
-    return res.json();
-  }
-
-  // ---- UI render (минимум, без initData) ----
-  function renderMe() {
-    const el = document.getElementById("me");
-    if (!el || !state.me) return;
-    el.textContent = `${state.me.name || "Пользователь"} · ${state.me.role}`;
-  }
-
-  function renderSuppliers() {
-    const wrap = document.getElementById("suppliers");
-    if (!wrap) return;
-    wrap.innerHTML = "";
-    for (const s of state.suppliers) {
-      const row = document.createElement("div");
-      row.className = "product-row";
-      const name = document.createElement("div");
-      name.className = "product-name";
-      name.textContent = s.name;
-      const btn = document.createElement("button");
-      btn.className = "btn btn-secondary";
-      btn.textContent = "Удалить";
-      btn.onclick = async () => {
-        if (!confirm(`Удалить поставщика «${s.name}» и связанные данные?`)) return;
-        try {
-          await apiDelete(`/api/admin/suppliers/${s.id}`);
-          toast("Поставщик удалён");
-          await loadSuppliers();
-        } catch (e) {
-          toast(String(e.message || e), false);
-        }
-      };
-      row.append(name, btn);
-      wrap.appendChild(row);
+  async function api(path, { method='GET', body } = {}) {
+    const url = new URL(API_BASE + path);
+    const m = method.toUpperCase();
+    if (m === 'POST') {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...(body||{}), initData: TG_INIT })
+      });
+      const j = await res.json().catch(()=>({}));
+      if (!res.ok || j?.ok === false) throw new Error(j?.error || res.statusText);
+      return j;
     }
+    if (TG_INIT) url.searchParams.set('initData', encodeURIComponent(TG_INIT));
+    const res = await fetch(url, { method: m, headers: { 'Content-Type': 'application/json' } });
+    const j = await res.json().catch(()=>({}));
+    if (!res.ok || j?.ok === false) throw new Error(j?.error || res.statusText);
+    return j;
   }
 
-  function renderProducts() {
-    const wrap = document.getElementById("products");
-    if (!wrap) return;
-    wrap.innerHTML = "";
-    for (const p of state.products) {
-      const row = document.createElement("div");
-      row.className = "product-row";
-      const name = document.createElement("div");
-      name.className = "product-name";
-      name.textContent = `${p.name}${p.unit ? " · " + p.unit : ""}${p.category ? " · " + p.category : ""}`;
-      const btn = document.createElement("button");
-      btn.className = "btn btn-secondary";
-      btn.textContent = "Удалить";
-      btn.onclick = async () => {
-        if (!confirm(`Удалить товар «${p.name}»?`)) return;
-        try {
-          await apiDelete(`/api/admin/products/${p.id}`);
-          toast("Товар удалён");
-          await loadProducts();
-        } catch (e) {
-          toast(String(e.message || e), false);
-        }
-      };
-      row.append(name, btn);
-      wrap.appendChild(row);
-    }
-  }
+  const $ = s => document.querySelector(s);
+  function el(t, a={}, ...c){ const e=document.createElement(t); for(const[k,v] of Object.entries(a)){ if(k==='className')e.className=v; else if(k==='html')e.innerHTML=v; else e.setAttribute(k,v);} for(const x of c){ e.appendChild(typeof x==='string'?document.createTextNode(x):x);} return e; }
+  const btn=(t,on)=>{ const b=el('button',{className:'btn',type:'button'},t); if(on) b.addEventListener('click',on); return b; };
 
-  function renderRequisitions() {
-    const wrap = document.getElementById("requisitions");
-    if (!wrap) return;
-    wrap.innerHTML = "";
-    for (const r of state.requisitions) {
-      const row = document.createElement("div");
-      row.className = "product-row";
-      const name = document.createElement("div");
-      name.className = "product-name";
-      name.textContent = `#${r.id} · ${r.created_at} · ${r.user_name || ""}`;
-      const btn = document.createElement("a");
-      btn.className = "btn btn-secondary";
-      btn.textContent = "Открыть";
-      btn.href = `/api/admin/requisitions/${r.id}${qstr()}`;
-      btn.target = "_blank";
-      row.append(name, btn);
-      wrap.appendChild(row);
-    }
-  }
+  const boxWarn = document.getElementById('warning');
+  const boxSup  = document.getElementById('suppliers');
+  const boxProd = document.getElementById('products');
+  const boxReq  = document.getElementById('requisitions');
 
-  // ---- loaders ----
-  async function loadMe() {
-    state.me = await apiGet("/api/me");
-    if (state.me.role !== "admin") {
-      toast("Доступ только для администратора", false);
-    }
-    renderMe();
-  }
   async function loadSuppliers() {
-    state.suppliers = await apiGet("/api/admin/suppliers");
-    renderSuppliers();
+    const data = await api('/api/admin/suppliers');
+    boxSup.innerHTML = '';
+    (data.suppliers||[]).forEach(s=>{
+      const row = el('div',{className:'card spaced'},
+        el('div',{}, `#${s.id} — ${s.name}`),
+        s.contact_note ? el('div',{className:'muted'}, s.contact_note) : '',
+        btn('Удалить', async ()=>{
+          if (!confirm(`Удалить поставщика "${s.name}"?`)) return;
+          try{ await api(`/api/admin/suppliers/${s.id}`, {method:'DELETE'}); await loadSuppliers(); await loadProducts(); }
+          catch(e){ alert(e.message); }
+        })
+      );
+      boxSup.appendChild(row);
+    });
   }
+
   async function loadProducts() {
-    state.products = await apiGet("/api/admin/products");
-    renderProducts();
+    const data = await api('/api/admin/products');
+    boxProd.innerHTML = '';
+    (data.products||[]).forEach(p=>{
+      const row = el('div',{className:'card spaced'},
+        el('div',{}, `#${p.id} — ${p.name} (${p.unit}), пост.: ${p.supplier_name}`),
+        p.category ? el('div',{className:'muted'}, `Категория: ${p.category}`) : '',
+        btn('Удалить', async ()=>{
+          if (!confirm(`Удалить товар "${p.name}"?`)) return;
+          try{ await api(`/api/admin/products/${p.id}`, {method:'DELETE'}); await loadProducts(); }
+          catch(e){ alert(e.message); }
+        })
+      );
+      boxProd.appendChild(row);
+    });
   }
+
   async function loadRequisitions() {
-    state.requisitions = await apiGet("/api/admin/requisitions");
-    renderRequisitions();
+    const data = await api('/api/admin/requisitions');
+    boxReq.innerHTML = '';
+    (data.requisitions||[]).forEach(r=>{
+      const row = el('div',{className:'card spaced'},
+        el('div',{}, `#${r.id} — ${r.user_name || 'сотрудник'} — ${r.created_at || ''}`),
+        btn('Открыть', async ()=>{
+          try{
+            const det = await api(`/api/admin/requisitions/${r.id}`);
+            const orders = det.orders || [];
+            alert(
+              orders.length
+                ? orders.map(o => `• ${o.supplier.name}\n` + o.items.map(i => `  - ${i.product_name}: ${i.qty_final} ${i.unit||''}`).join('\n')).join('\n\n')
+                : 'Пусто'
+            );
+          }catch(e){ alert(e.message); }
+        })
+      );
+      boxReq.appendChild(row);
+    });
   }
 
-  // ---- create forms ----
-  function bindForms() {
-    const fSup = document.getElementById("form-supplier");
-    if (fSup) {
-      fSup.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const name = fSup.querySelector("[name=name]").value.trim();
-        const contact_note = fSup.querySelector("[name=contact_note]").value.trim();
-        if (!name) return toast("Введите название поставщика", false);
-        try {
-          await apiPost("/api/admin/suppliers", { name, contact_note });
-          fSup.reset();
-          toast("Поставщик добавлен");
-          await loadSuppliers();
-        } catch (e2) {
-          toast(String(e2.message || e2), false);
-        }
-      });
-    }
-
-    const fProd = document.getElementById("form-product");
-    if (fProd) {
-      fProd.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const name = fProd.querySelector("[name=name]").value.trim();
-        const unit = fProd.querySelector("[name=unit]").value.trim();
-        const category = fProd.querySelector("[name=category]").value.trim() || "Общее";
-        const supplier_id = Number(fProd.querySelector("[name=supplier_id]").value) || null;
-        if (!name) return toast("Введите название товара", false);
-        try {
-          await apiPost("/api/admin/products", { name, unit, category, supplier_id });
-          fProd.reset();
-          toast("Товар добавлен");
-          await loadProducts();
-        } catch (e2) {
-          toast(String(e2.message || e2), false);
-        }
-      });
-    }
-  }
-
-  // ---- init ----
-  async function init() {
-    if (!ensureTgUserId()) {
-      toast("Не указан Telegram ID", false);
+  async function boot(){
+    if (!TG_INIT) {
+      boxWarn.style.display='block';
+      boxWarn.innerHTML = `<b>Ошибка: Missing initData</b><br/>Откройте админку через кнопку WebApp в боте.`;
       return;
     }
-
-    // Telegram UI init (необязательно)
-    try { window.Telegram?.WebApp?.expand?.(); } catch (_) {}
-
-    renderMe();
-    bindForms();
-
-    try { await loadMe(); } catch (e) { toast(String(e.message || e), false); }
-    try { await loadSuppliers(); } catch (e) { console.warn(e); }
-    try { await loadProducts(); } catch (e) { console.warn(e); }
-    try { await loadRequisitions(); } catch (e) { console.warn(e); }
+    document.getElementById('btnAddSup')?.addEventListener('click', async ()=>{
+      const name = document.getElementById('supName').value.trim();
+      const note = document.getElementById('supNote').value.trim();
+      if (name.length<2) return alert('Название слишком короткое');
+      try{ await api('/api/admin/suppliers',{method:'POST',body:{name,contact_note:note}}); document.getElementById('supName').value=''; document.getElementById('supNote').value=''; await loadSuppliers(); }
+      catch(e){ alert(e.message); }
+    });
+    document.getElementById('btnAddProd')?.addEventListener('click', async ()=>{
+      const name = document.getElementById('prodName').value.trim();
+      const unit = document.getElementById('prodUnit').value.trim();
+      const category = document.getElementById('prodCategory').value.trim() || 'Общее';
+      const supplier_id = Number(document.getElementById('prodSupplierId').value);
+      if (name.length<2) return alert('Название слишком короткое');
+      if (!unit) return alert('Ед. изм. обязательна');
+      if (!Number.isFinite(supplier_id)) return alert('Неверный ID поставщика');
+      try{ await api('/api/admin/products',{method:'POST',body:{name,unit,category,supplier_id}}); document.getElementById('prodName').value=''; document.getElementById('prodUnit').value=''; document.getElementById('prodCategory').value=''; document.getElementById('prodSupplierId').value=''; await loadProducts(); }
+      catch(e){ alert(e.message); }
+    });
+    await Promise.all([loadSuppliers(), loadProducts(), loadRequisitions()]);
   }
 
-  document.addEventListener("DOMContentLoaded", init);
+  try{ window.Telegram?.WebApp?.ready?.(); }catch{}
+  boot().catch(e=>alert('Ошибка загрузки: '+e.message));
 })();

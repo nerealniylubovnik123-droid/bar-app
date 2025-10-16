@@ -1,30 +1,24 @@
-// shared.js — нейтральный, БЕЗ требований initData и БЕЗ prompt'ов.
-// Даёт опциональные хелперы: получить tg_user_id из WebApp/URL/localStorage.
+window.tg = window.Telegram && Telegram.WebApp ? Telegram.WebApp : null;
+if (tg) tg.expand();
 
-(function () {
-  function resolveTgUserId() {
-    try {
-      const id = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
-      if (id) return Number(id);
-    } catch (_) {}
-    try {
-      const url = new URL(window.location.href);
-      const q = url.searchParams.get("tg_user_id");
-      if (q && Number(q)) return Number(q);
-    } catch (_) {}
-    try {
-      const ls = localStorage.getItem("tg_user_id");
-      if (ls && Number(ls)) return Number(ls);
-    } catch (_) {}
-    return null;
+function getInitData() {
+  return (tg && tg.initData) ? tg.initData : (localStorage.getItem('DEV_INIT_DATA') || '');
+}
+
+async function api(path, options = {}) {
+  options.headers = Object.assign({}, options.headers || {}, {
+    'Content-Type': 'application/json',
+    'X-TG-INIT-DATA': getInitData(),
+  });
+  const base = (window.API_BASE || '') + path;
+  const res = await fetch(base, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    const msg = (data && data.error) ? data.error : res.statusText;
+    alert('Ошибка: ' + msg);
+    throw new Error(msg);
   }
+  return data;
+}
 
-  function saveTgUserId(id) {
-    try {
-      if (Number(id)) localStorage.setItem("tg_user_id", String(Number(id)));
-    } catch (_) {}
-  }
-
-  // Никаких prompt/алертов здесь — всё тихо.
-  window.AppShared = { resolveTgUserId, saveTgUserId };
-})();
+window.AppAPI = { api, tg };
