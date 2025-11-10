@@ -502,7 +502,7 @@ app.get('/api/me', (req, res, next) => authMiddleware(req, res, () => {
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
 const pathFrontend = path.resolve(__dirname, '../public');
-app.use(express.static(pathFrontend));
+app.use(express.static(path.join(__dirname, "../public")));
 app.get(['/admin', '/admin.html'], (_req, res) => res.sendFile(path.join(pathFrontend, 'admin.html')));
 app.get(['/staff', '/staff.html'], (_req, res) => res.sendFile(path.join(pathFrontend, 'staff.html')));
 app.get('/', (_req, res) => res.sendFile(path.join(pathFrontend, 'index.html')));
