@@ -34,7 +34,6 @@ app.use(cors({
 app.options('*', cors());
 
 // === Отдача статических файлов Mini App ===
-const path = require('path');
 const publicDir = path.join(__dirname, '../public'); // если public лежит в корне рядом с backend
 app.use(express.static(publicDir));
 
