@@ -19,3 +19,4 @@ ENV NODE_ENV=production
 EXPOSE 8080
 
 CMD ["node", "src/server.cjs"]
+# force rebuild 2025-11-10
