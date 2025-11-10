@@ -1,9 +1,11 @@
 {
-  "name": "app-backend",
+  "name": "bar-app",
   "version": "1.0.0",
   "private": true,
+  "type": "commonjs",
   "scripts": {
-    "start": "node src/server.cjs"
+    "start": "node server.cjs",
+    "dev": "DEV_ALLOW_UNSAFE=true node server.cjs"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",
