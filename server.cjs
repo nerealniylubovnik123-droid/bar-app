@@ -34,12 +34,15 @@ app.use(cors({
 app.options('*', cors());
 
 // === Отдача статических файлов Mini App ===
+const path = require('path');
 const publicDir = path.join(__dirname, 'public');
+
+// Для Railway: статика лежит в backend/public
 app.use(express.static(publicDir));
 
 // Если путь не найден среди API — отдать index.html
 app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api')) return next(); // API не трогаем
+  if (req.path.startsWith('/api')) return next();
   res.sendFile(path.join(publicDir, 'index.html'));
 });
 
