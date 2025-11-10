@@ -33,6 +33,17 @@ app.use(cors({
 }));
 app.options('*', cors());
 
+// === Отдача статических файлов Mini App ===
+const path = require('path');
+const publicDir = path.join(__dirname, '../public'); // если public лежит в корне рядом с backend
+app.use(express.static(publicDir));
+
+// Если путь не найден среди API — отдать index.html
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api')) return next(); // API не трогаем
+  res.sendFile(path.join(publicDir, 'index.html'));
+});
+
 /* ================== DB bootstrap ================== */
 let db;
 let migrate = () => {};
