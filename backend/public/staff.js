@@ -101,6 +101,21 @@ function renderProductsByCategory(products) {
     group.appendChild(itemsWrap);
     container.appendChild(group);
   }
+
+  container.querySelectorAll(".qty-input").forEach((input) => {
+    input.addEventListener("input", updateSelectionSummary);
+  });
+  updateSelectionSummary();
+}
+
+function updateSelectionSummary() {
+  const qtyInputs = document.querySelectorAll("[id^='qty-']");
+  const selected = [...qtyInputs].filter((input) => Number(input.value) > 0).length;
+  const count = document.getElementById("selected-count");
+  const send = document.getElementById("send-btn");
+
+  if (count) count.textContent = String(selected);
+  if (send) send.disabled = selected === 0;
 }
 
 function loadProducts() {
@@ -130,6 +145,7 @@ document.getElementById("send-btn").onclick = async () => {
   qtyInputs.forEach((input) => {
     input.value = "";
   });
+  updateSelectionSummary();
 
   alert(`Заявка #${r.requisition_id} отправлена!`);
   loadActiveOrders();

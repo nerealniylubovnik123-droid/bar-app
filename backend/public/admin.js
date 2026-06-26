@@ -77,6 +77,49 @@ function formatShortDate(value) {
   return `${dd}.${mm} · ${hh}:${mi}`;
 }
 
+function formatSupplierOrderText(_reqItem, order) {
+  return order.items.map((it) => {
+    const unit = it.unit ? ` ${it.unit}` : "";
+    return `${it.name} — ${it.qty}${unit}`;
+  }).join("\n");
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+async function copySupplierOrder(button) {
+  const text = button.dataset.copyText || "";
+  if (!text) return;
+
+  try {
+    await copyTextToClipboard(text);
+    const originalText = button.textContent;
+    button.textContent = "Скопировано";
+    button.disabled = true;
+
+    window.setTimeout(() => {
+      button.textContent = originalText || "Копировать";
+      button.disabled = false;
+    }, 1200);
+  } catch (error) {
+    alert("Не удалось скопировать текст");
+  }
+}
+
 async function loadSuppliers() {
   const r = await API("/api/admin/suppliers");
   if (!r.ok) return console.warn("loadSuppliers:", r.error);
@@ -338,6 +381,7 @@ async function loadOwnerRequisitions() {
     entry.className = `req-entry req-${reqStatus}`;
 
     const supplierRows = reqItem.orders.map((order) => {
+      const copyText = formatSupplierOrderText(reqItem, order);
       const itemsHtml = order.items.map((it) => `
         <div class="item-line">
           <span class="item-name">${escapeHtml(it.name)}</span>
@@ -356,6 +400,9 @@ async function loadOwnerRequisitions() {
             </div>
             <div class="row-actions supplier-actions">
               <span class="status-badge ${escapeHtml(order.status)}">${statusLabel(order.status)}</span>
+              <button type="button" class="ghost-btn mini-btn copy-supplier-btn" data-copy-text="${escapeHtml(copyText)}">
+                Копировать
+              </button>
               <button class="ghost-btn mini-btn" ${canMarkOrdered ? "" : "disabled"} onclick="event.stopPropagation(); markOrdered(${order.order_id})">
                 ${canMarkOrdered ? "Заказал" : "Отмечено"}
               </button>
@@ -395,6 +442,13 @@ async function loadOwnerRequisitions() {
     `;
 
     box.appendChild(entry);
+  });
+
+  box.querySelectorAll(".copy-supplier-btn").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      copySupplierOrder(button);
+    });
   });
 }
 
